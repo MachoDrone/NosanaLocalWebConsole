@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-echo "v0.00.09" # increment with each edit
+echo "v0.00.10" # increment with each edit
 sleep 3
 # =============================================================================
 # Nosana WebUI — Netdata Launcher
@@ -116,21 +116,21 @@ setup_nologin() {
 # Secure mode (basic auth — nothing visible until you log in)
 # -----------------------------------------------------------------------------
 setup_secure() {
-    if [ ! -f "${HTPASSWD_FILE}" ]; then
-        local password
+    local password
+    if [ ! -f "${HTPASSWD_FILE}" ] || [ ! -f "${PASSWORD_FILE}" ]; then
         password=$(openssl rand -hex 12)
         echo -n "${password}" > "${PASSWORD_FILE}"
         printf "nosana:$(openssl passwd -apr1 "${password}")\n" > "${HTPASSWD_FILE}"
+    else
+        password=$(cat "${PASSWORD_FILE}")
     fi
-
-    local password
-    password=$(cat "${PASSWORD_FILE}")
 
     echo ""
     echo -e "${BOLD}Credentials (save these!):${NC}"
     echo -e "   User: ${G}nosana${NC}"
     echo -e "   Pass: ${G}${password}${NC}"
     echo ""
+    echo -e "   (Password also stored in ${PASSWORD_FILE})"
 
     cat > "${CONFIG_DIR}/overrides/auth.conf" << EOF
 [web]
