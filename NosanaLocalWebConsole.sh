@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-echo "v0.01.3"
+echo "v0.01.4"
 sleep 3
 # =============================================================================
 # Nosana WebUI — Netdata Launcher
@@ -182,7 +182,8 @@ create_password() {
     echo "${auth_user}:${hashed}" > "${HTPASSWD_FILE}"
     echo -n "${auth_pass}" > "${PASSWORD_FILE}"
     echo -n "${AUTH_VERSION}" > "${AUTH_VERSION_FILE}"
-    chmod 600 "${HTPASSWD_FILE}" "${PASSWORD_FILE}" "${AUTH_VERSION_FILE}"
+    chmod 644 "${HTPASSWD_FILE}"
+    chmod 600 "${PASSWORD_FILE}" "${AUTH_VERSION_FILE}"
 
     echo ""
     info "Credentials saved for user: ${auth_user}"
