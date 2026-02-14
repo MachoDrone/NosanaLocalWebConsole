@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-echo "v0.01.4"
+echo "v0.01.5"
 sleep 3
 # =============================================================================
 # NOSweb — GPU Host Monitoring Stack
@@ -65,7 +65,6 @@ set -euo pipefail
 # -----------------------------------------------------------------------------
 # Config
 # -----------------------------------------------------------------------------
-SCRIPT_VERSION="0.02.0"
 CONFIG_DIR="${HOME}/.nosana-webui"
 DOCKER_NETWORK="NOSweb-net"
 
@@ -187,7 +186,7 @@ ensure_network() {
         step "Creating Docker network: ${DOCKER_NETWORK}"
         docker network create "${DOCKER_NETWORK}" >/dev/null
     fi
-    info "Docker network: ${DOCKER_NETWORK}"
+    info "Docker network ready."
 }
 
 # -----------------------------------------------------------------------------
@@ -542,10 +541,11 @@ generate_dashboards() {
 
 # -----------------------------------------------------------------------------
 # Generate Nginx config
+# Key fix: WebSocket upgrade must be conditional (map block in http context).
+# Without this, Grafana's live features break with "Something went wrong".
 # Routes:  / → Grafana    /netdata/ → Netdata    /prometheus/ → Prometheus
 # -----------------------------------------------------------------------------
 generate_nginx_conf() {
-    # Build auth block
     local auth_block=""
     if [ "${NOLOGIN}" = false ] && [ -f "${HTPASSWD_FILE}" ]; then
         auth_block='
@@ -561,6 +561,14 @@ pid /tmp/nginx.pid;
 events { worker_connections 256; }
 
 http {
+    # Conditional WebSocket upgrade — required for Grafana live features.
+    # Without this map, setting Connection to "upgrade" unconditionally
+    # breaks normal HTTP requests and causes "Something went wrong".
+    map \$http_upgrade \$connection_upgrade {
+        default upgrade;
+        '' close;
+    }
+
     upstream netdata_backend {
         server ${C_NETDATA}:${PORT_NETDATA};
         keepalive 1024;
@@ -584,7 +592,7 @@ ${auth_block}
             proxy_pass http://grafana_backend;
             proxy_http_version 1.1;
             proxy_set_header Upgrade \$http_upgrade;
-            proxy_set_header Connection "upgrade";
+            proxy_set_header Connection \$connection_upgrade;
         }
 
         # Netdata at /netdata/ (official subfolder proxy config)
@@ -644,7 +652,7 @@ wait_for_http() {
     local elapsed=0
     step "Waiting for ${label}..."
     while [ ${elapsed} -lt ${max_wait} ]; do
-        if curl -sf "${url}" >/dev/null 2>&1; then
+        if curl -s -o /dev/null -w '' "${url}" 2>/dev/null; then
             info "${label} is ready."
             return 0
         fi
@@ -654,7 +662,6 @@ wait_for_http() {
     return 1
 }
 
-# Get container IP on Docker network
 container_ip() {
     docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$1" 2>/dev/null
 }
@@ -677,6 +684,7 @@ launch_netdata() {
         --cap-add SYS_PTRACE
         --cap-add SYS_ADMIN
         --security-opt apparmor=unconfined
+        -e NETDATA_DISABLE_CLOUD=1
         -v /proc:/host/proc:ro
         -v /sys:/host/sys:ro
         -v /etc/os-release:/host/etc/os-release:ro
@@ -738,11 +746,9 @@ launch_dcgm() {
         return 0
     fi
 
-    # DCGM crashes quickly on unsupported GPUs — verify it's still running
     sleep 5
     if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${C_DCGM}$"; then
         warn "DCGM exporter crashed — GPU may not support DCGM."
-        warn "GPU metrics will use Netdata's nvidia-smi collector only."
         echo '[]' > "${PROM_TARGETS}/dcgm.json"
         docker rm "${C_DCGM}" 2>/dev/null || true
     fi
@@ -817,14 +823,25 @@ launch_proxy() {
     cmd+=("${IMG_NGINX}")
     "${cmd[@]}" && info "Proxy started." || { err "Proxy failed."; return 1; }
 
+    # Verify proxy is responding (don't use -f flag — 401 is expected and valid)
     sleep 2
+    local code
+    code=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${DEFAULT_PORT}/" 2>/dev/null || true)
+
     if [ "${NOLOGIN}" = false ]; then
-        local code
-        code=$(curl -sf -o /dev/null -w "%{http_code}" "http://127.0.0.1:${DEFAULT_PORT}/" 2>/dev/null || echo "000")
-        [ "${code}" = "401" ] && info "Auth working — browser will prompt for login." || \
+        if [ "${code}" = "401" ]; then
+            info "Auth working — login required."
+        elif [ "${code}" = "302" ] || [ "${code}" = "200" ]; then
             info "Proxy responding (HTTP ${code})."
+        else
+            warn "Proxy returned HTTP ${code}. Check: docker logs ${C_PROXY}"
+        fi
     else
-        wait_for_http "http://127.0.0.1:${DEFAULT_PORT}/" "Proxy" 10 || true
+        if [ "${code}" = "200" ] || [ "${code}" = "302" ]; then
+            info "Proxy responding."
+        else
+            warn "Proxy returned HTTP ${code}. Check: docker logs ${C_PROXY}"
+        fi
     fi
 }
 
@@ -874,9 +891,7 @@ do_status() {
     done
     local ip; ip=$(get_ip)
     echo ""
-    echo -e "  Grafana:     ${C_CLR}http://${ip:-localhost}:${DEFAULT_PORT}/${NC}"
-    echo -e "  Netdata:     ${C_CLR}http://${ip:-localhost}:${DEFAULT_PORT}/netdata/${NC}"
-    echo -e "  Prometheus:  ${C_CLR}http://${ip:-localhost}:${DEFAULT_PORT}/prometheus/${NC}"
+    echo -e "  Dashboard:   ${C_CLR}http://${ip:-localhost}:${DEFAULT_PORT}/${NC}"
     echo -e "  Config:      ${CONFIG_DIR}"
     echo ""
 }
@@ -937,7 +952,7 @@ main() {
     ensure_network
 
     if [ "${NOLOGIN}" = true ]; then
-        info "Mode: anonymous (no login)"
+        info "Mode: open access (no login)"
     else
         info "Mode: login required"
         setup_password
@@ -964,12 +979,10 @@ main() {
     echo -e "${BOLD}════════════════════════════════════════════════════════${NC}"
     echo -e "  ${G}${BOLD}NOSweb is running!${NC}"
     echo ""
-    echo -e "  ${BOLD}Grafana:${NC}     ${C_CLR}http://${ip:-localhost}:${port}/${NC}"
-    echo -e "  ${BOLD}Netdata:${NC}     ${C_CLR}http://${ip:-localhost}:${port}/netdata/${NC}"
-    echo -e "  ${BOLD}Prometheus:${NC}  ${C_CLR}http://${ip:-localhost}:${port}/prometheus/${NC}"
+    echo -e "  ${BOLD}Dashboard:${NC}   ${C_CLR}http://${ip:-localhost}:${port}/${NC}"
     echo ""
     if [ "${NOLOGIN}" = true ]; then
-        echo -e "  ${BOLD}Mode:${NC}        Anonymous (open access)"
+        echo -e "  ${BOLD}Mode:${NC}        Open access (no login)"
     else
         local cred_user
         cred_user=$(head -1 "${HTPASSWD_FILE}" 2>/dev/null | cut -d: -f1)
@@ -983,8 +996,9 @@ main() {
     echo -e "  ${BOLD}Stop:${NC}        $0 --stop"
     echo -e "  ${BOLD}Status:${NC}      $0 --status"
     echo ""
-    echo -e "  ${Y}Tip:${NC} GPU Overview is the home dashboard."
-    echo -e "  Host Overview is available in the dashboard menu."
+    echo -e "  ${BOLD}Also available behind this URL:${NC}"
+    echo -e "    /netdata/       Raw Netdata dashboard"
+    echo -e "    /prometheus/    Prometheus query UI"
     echo -e "${BOLD}════════════════════════════════════════════════════════${NC}"
     echo ""
 }
