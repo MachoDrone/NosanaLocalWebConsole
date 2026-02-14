@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Usage: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-echo "v0.00.05" # increment with each edit
+echo "v0.00.06" # increment with each edit
 sleep 3
-
 # =============================================================================
 # Nosana WebUI — Netdata Launcher
 #
@@ -10,15 +9,14 @@ sleep 3
 # Persistent config survives container restarts and purges.
 #
 # Usage:
-#   bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-#   ... --nologin          # anonymous mode, no sign-in screen
-#   ... --stop             # stop the container
-#   ... --status           # show status
+# bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
+# ... --nologin # anonymous mode, no sign-in screen
+# ... --stop     # stop the container
+# ... --status   # show status
 #
 # Tested on: Ubuntu 20.04 – 24.04 (Desktop, Server, Minimal, Core)
 # Requires: Docker (already present on Nosana hosts)
 # =============================================================================
-
 set -euo pipefail
 
 # -----------------------------------------------------------------------------
@@ -39,7 +37,7 @@ fi
 
 info() { echo -e "${G}[OK]${NC} $*"; }
 warn() { echo -e "${Y}[WARN]${NC} $*"; }
-err()  { echo -e "${R}[ERR]${NC} $*"; }
+err() { echo -e "${R}[ERR]${NC} $*"; }
 step() { echo -e "${C}[....]${NC} $*"; }
 
 # -----------------------------------------------------------------------------
@@ -77,7 +75,6 @@ check_nvidia_runtime() {
 setup_config() {
     mkdir -p "${CONFIG_DIR}/custom-tabs"
     mkdir -p "${CONFIG_DIR}/overrides"
-
     if [ ! -f "${CONFIG_DIR}/config.json" ]; then
         cat > "${CONFIG_DIR}/config.json" << 'EOF'
 {
@@ -95,7 +92,6 @@ setup_config() {
 EOF
         info "Created config at ${CONFIG_DIR}/config.json"
     fi
-
     # Force Netdata to listen on all interfaces
     if [ ! -f "${CONFIG_DIR}/overrides/bind.conf" ]; then
         cat > "${CONFIG_DIR}/overrides/bind.conf" << 'EOF'
@@ -154,33 +150,29 @@ do_stop() {
 do_status() {
     echo -e "${BOLD}Nosana WebUI Status${NC}"
     echo "──────────────────────────────────────"
-
     if docker info &>/dev/null 2>&1; then
-        echo -e "  Docker:     ${G}running${NC}"
+        echo -e " Docker: ${G}running${NC}"
     else
-        echo -e "  Docker:     ${R}not running${NC}"
+        echo -e " Docker: ${R}not running${NC}"
     fi
-
     if check_gpu; then
         local gpu_name
         gpu_name=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)
-        echo -e "  GPU:        ${G}${gpu_name}${NC}"
+        echo -e " GPU: ${G}${gpu_name}${NC}"
     else
-        echo -e "  GPU:        ${Y}not detected${NC}"
+        echo -e " GPU: ${Y}not detected${NC}"
     fi
-
     if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${CONTAINER_NAME}$"; then
         local port
         port=$(docker port "${CONTAINER_NAME}" 19999/tcp 2>/dev/null | head -1 || echo "unknown")
-        echo -e "  Netdata:    ${G}running${NC} → http://localhost:${port%%/*}"
-        echo -e "  Container:  $(docker ps --filter name=${CONTAINER_NAME} --format '{{.Status}}')"
+        echo -e " Netdata: ${G}running${NC} → http://localhost:${port%%/*}"
+        echo -e " Container: $(docker ps --filter name=${CONTAINER_NAME} --format '{{.Status}}')"
     elif docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${CONTAINER_NAME}$"; then
-        echo -e "  Netdata:    ${Y}stopped${NC}"
+        echo -e " Netdata: ${Y}stopped${NC}"
     else
-        echo -e "  Netdata:    ${R}not deployed${NC}"
+        echo -e " Netdata: ${R}not deployed${NC}"
     fi
-
-    echo -e "  Config:     ${CONFIG_DIR}"
+    echo -e " Config: ${CONFIG_DIR}"
     echo ""
 }
 
@@ -190,7 +182,6 @@ do_status() {
 do_launch() {
     local port="$1"
     local nologin="${2:-false}"
-
     if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${CONTAINER_NAME}$"; then
         step "Removing previous instance..."
         docker stop "${CONTAINER_NAME}" 2>/dev/null || true
@@ -201,7 +192,6 @@ do_launch() {
     docker pull "${NETDATA_IMAGE}"
 
     step "Launching Netdata on port ${port}..."
-
     local -a cmd=(
         docker run -d
         --name "${CONTAINER_NAME}"
@@ -251,17 +241,21 @@ do_launch() {
         echo -e "${BOLD}════════════════════════════════════════════════════${NC}"
         echo -e " ${G}${BOLD}Netdata is running!${NC}"
         echo ""
-        echo -e " ${BOLD}Local:${NC}   http://localhost:${port}"
+        echo -e " ${BOLD}Local:${NC} http://localhost:${port}"
         echo -e " ${BOLD}Network:${NC} http://$(hostname -I | awk '{print $1}'):${port}"
         echo ""
         open_firewall "${port}"
         echo -e " ${BOLD}Config:${NC} ${CONFIG_DIR}/"
-        echo -e " ${BOLD}Stop:${NC}   docker stop ${CONTAINER_NAME} && docker rm ${CONTAINER_NAME}"
+        echo -e " ${BOLD}Stop:${NC} docker stop ${CONTAINER_NAME} && docker rm ${CONTAINER_NAME}"
         echo -e " ${BOLD}Status:${NC} docker ps | grep ${CONTAINER_NAME}"
         echo -e " ${BOLD}Update:${NC} Re-run this script"
+
         if [ "${nologin}" = true ]; then
-            echo -e " ${BOLD}Mode:${NC}   Anonymous (no sign-in)"
+            echo -e " ${BOLD}Mode:${NC} Anonymous (no sign-in)"
+        else
+            echo -e " ${BOLD}Mode:${NC} Sign-in required (Netdata Cloud)"
         fi
+
         echo -e "${BOLD}════════════════════════════════════════════════════${NC}"
         echo ""
     else
@@ -280,14 +274,14 @@ main() {
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --port)     port="$2"; shift 2 ;;
-            --nologin)  nologin=true; shift ;;
-            --stop)     action="stop"; shift ;;
-            --status)   action="status"; shift ;;
+            --port) port="$2"; shift 2 ;;
+            --nologin) nologin=true; shift ;;
+            --stop) action="stop"; shift ;;
+            --status) action="status"; shift ;;
             --help|-h)
                 echo "Usage: $0 [--port PORT] [--nologin] [--stop] [--status] [--help]"
                 echo ""
-                echo "  --nologin     Disable Cloud sign-in (anonymous dashboard)"
+                echo " --nologin   Anonymous mode (no Cloud sign-in screen)"
                 exit 0
                 ;;
             *) err "Unknown option: $1"; exit 1 ;;
@@ -295,7 +289,7 @@ main() {
     done
 
     case "${action}" in
-        stop)   do_stop; exit 0 ;;
+        stop) do_stop; exit 0 ;;
         status) do_status; exit 0 ;;
     esac
 
@@ -305,7 +299,15 @@ main() {
 
     check_docker
     setup_config
-    [ "${nologin}" = true ] && setup_nologin
+
+    # Default = login required. Only create the disable file when --nologin is used.
+    if [ "${nologin}" = true ]; then
+        setup_nologin
+    elif [ -f "${CONFIG_DIR}/overrides/nologin.conf" ]; then
+        rm -f "${CONFIG_DIR}/overrides/nologin.conf"
+        info "Cloud sign-in enabled (login required)"
+    fi
+
     do_launch "${port}" "${nologin}"
 }
 
