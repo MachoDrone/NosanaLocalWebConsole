@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Usage: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-echo "v0.00.03" # increment with each edit
-sleep 2
+echo "v0.00.04" # increment with each edit
+sleep 3
 
 # =============================================================================
 # Nosana WebUI — Netdata Launcher
@@ -93,12 +93,11 @@ EOF
         info "Created config at ${CONFIG_DIR}/config.json"
     fi
 
-    # Force Netdata to listen on all interfaces (fixes localhost-only bind)
+    # Force Netdata to listen on all interfaces (IPv4 + IPv6) — fixed syntax
     if [ ! -f "${CONFIG_DIR}/overrides/bind.conf" ]; then
         cat > "${CONFIG_DIR}/overrides/bind.conf" << 'EOF'
 [web]
-    bind to = 0.0.0.0
-    bind to = [::]
+    bind to = 0.0.0.0 [::]
 EOF
         info "Created Netdata all-interfaces bind override"
     fi
@@ -242,8 +241,8 @@ do_launch() {
         echo ""
         open_firewall "${port}"
         echo -e " ${BOLD}Config:${NC} ${CONFIG_DIR}/"
-        echo -e " ${BOLD}Stop:${NC}   $0 --stop"
-        echo -e " ${BOLD}Status:${NC} $0 --status"
+        echo -e " ${BOLD}Stop:${NC}   docker stop ${CONTAINER_NAME} && docker rm ${CONTAINER_NAME}"
+        echo -e " ${BOLD}Status:${NC} docker ps | grep ${CONTAINER_NAME}"
         echo -e " ${BOLD}Update:${NC} Re-run this script"
         echo -e "${BOLD}════════════════════════════════════════════════════${NC}"
         echo ""
