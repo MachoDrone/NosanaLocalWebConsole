@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-echo "v0.00.07" # increment with each edit
+echo "v0.00.08" # increment with each edit
 sleep 3
 # =============================================================================
 # Nosana WebUI — Netdata Launcher
@@ -26,6 +26,7 @@ CONTAINER_NAME="nosana-webui"
 CONFIG_DIR="${HOME}/.nosana-webui"
 NETDATA_IMAGE="netdata/netdata:stable"
 DEFAULT_PORT=19999
+HTPASSWD_FILE="${CONFIG_DIR}/.htpasswd"
 
 # Terminal colors
 if [ -t 1 ]; then
@@ -106,26 +107,33 @@ EOF
 # Anonymous mode (no login, full open access)
 # -----------------------------------------------------------------------------
 setup_nologin() {
-    cat > "${CONFIG_DIR}/overrides/nologin.conf" << 'EOF'
-[cloud]
-    enabled = no
-[web]
-    bearer token protection = no
-EOF
+    rm -f "${CONFIG_DIR}/overrides/auth.conf" 2>/dev/null || true
     info "Anonymous mode enabled (no login required)"
 }
 
 # -----------------------------------------------------------------------------
-# Secure mode (Cloud sign-in / SSO required)
+# Secure mode (basic auth — nothing visible until you log in)
 # -----------------------------------------------------------------------------
 setup_secure() {
-    cat > "${CONFIG_DIR}/overrides/security.conf" << 'EOF'
-[cloud]
-    enabled = yes
+    # Generate password only once
+    if [ ! -f "${HTPASSWD_FILE}" ]; then
+        local password
+        password=$(openssl rand -hex 16)
+        printf "nosana:$(openssl passwd -apr1 "${password}")\n" > "${HTPASSWD_FILE}"
+        echo ""
+        echo -e "${BOLD}Generated credentials (save these!):${NC}"
+        echo -e "   User: ${G}nosana${NC}"
+        echo -e "   Pass: ${G}${password}${NC}"
+        echo ""
+    fi
+
+    cat > "${CONFIG_DIR}/overrides/auth.conf" << EOF
 [web]
-    bearer token protection = yes
+    enable auth = yes
+    auth mode = basic
+    auth file = /nosana-webui/.htpasswd
 EOF
-    info "Secure mode enabled (Cloud sign-in required)"
+    info "Secure mode enabled (login required — user: nosana)"
 }
 
 # -----------------------------------------------------------------------------
@@ -228,6 +236,7 @@ do_launch() {
         -v netdata-cache:/var/cache/netdata
         -v "${CONFIG_DIR}:/nosana-webui:rw"
         -v "${CONFIG_DIR}/overrides:/etc/netdata/netdata.conf.d:ro"
+        -v "${HTPASSWD_FILE}:/nosana-webui/.htpasswd:ro"
     )
 
     if check_nvidia_runtime; then
@@ -266,7 +275,7 @@ do_launch() {
         if [ "${nologin}" = true ]; then
             echo -e " ${BOLD}Mode:${NC} Anonymous (no login)"
         else
-            echo -e " ${BOLD}Mode:${NC} Secure (Cloud sign-in required)"
+            echo -e " ${BOLD}Mode:${NC} Login required (user: nosana)"
         fi
 
         echo -e "${BOLD}════════════════════════════════════════════════════${NC}"
@@ -313,13 +322,10 @@ main() {
     check_docker
     setup_config
 
-    # Default = secure (Cloud sign-in required)
-    # --nologin = anonymous (no login)
+    # Default = login required. --nologin = open
     if [ "${nologin}" = true ]; then
-        rm -f "${CONFIG_DIR}/overrides/security.conf" 2>/dev/null || true
         setup_nologin
     else
-        rm -f "${CONFIG_DIR}/overrides/nologin.conf" 2>/dev/null || true
         setup_secure
     fi
 
