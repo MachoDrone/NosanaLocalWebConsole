@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Usage: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-echo "v0.01.1"
+echo "v0.01.2"
 sleep 3
 # =============================================================================
 # Nosana WebUI — Netdata Launcher
 #
 # Deploys Netdata in Docker with full host monitoring + NVIDIA GPU support.
-# By default requires login (nginx reverse proxy with basic auth).
-# Uses your OS username — you provide your existing password.
+# Default: login required (nginx basic auth). Use --nologin for open access.
 #
+# Auth uses your OS username + password you type at first setup.
 # Persistent config in ~/.nosana-webui/ survives container restarts/purges.
 #
 # Usage:
@@ -36,7 +36,9 @@ DEFAULT_PORT=19999
 NETDATA_INTERNAL_PORT=19998
 HTPASSWD_FILE="${CONFIG_DIR}/.htpasswd"
 PASSWORD_FILE="${CONFIG_DIR}/.password"
+AUTH_VERSION_FILE="${CONFIG_DIR}/.auth_version"
 NGINX_CONF="${CONFIG_DIR}/nginx.conf"
+AUTH_VERSION="2"  # Bump this when auth mechanism changes
 
 # Terminal colors
 if [ -t 1 ]; then
@@ -80,31 +82,17 @@ check_nvidia_runtime() {
 }
 
 # -----------------------------------------------------------------------------
-# Cleanup stale state from previous runs
+# Cleanup stale state
 # -----------------------------------------------------------------------------
 cleanup_stale() {
-    # Stop and remove any existing containers
-    for c in "${PROXY_CONTAINER}" "${NETDATA_CONTAINER}"; do
+    # Stop and remove any existing containers (current + old naming)
+    for c in "${PROXY_CONTAINER}" "${NETDATA_CONTAINER}" "nosana-webui"; do
         if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${c}$"; then
             step "Removing old container: ${c}"
             docker stop "${c}" 2>/dev/null || true
             docker rm "${c}" 2>/dev/null || true
         fi
     done
-
-    # Also remove the old single-container name if it exists (from Grok's version)
-    if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^nosana-webui$"; then
-        step "Removing old nosana-webui container..."
-        docker stop "nosana-webui" 2>/dev/null || true
-        docker rm "nosana-webui" 2>/dev/null || true
-    fi
-
-    # Remove stale Netdata config volume that may have wrong bind settings
-    # Data volumes (lib, cache) are kept — only config is reset for clean bind
-    if docker volume ls -q 2>/dev/null | grep -q "^netdata-config$"; then
-        step "Removing stale netdata-config volume (fresh config on next start)..."
-        docker volume rm netdata-config 2>/dev/null || true
-    fi
 }
 
 # -----------------------------------------------------------------------------
@@ -133,19 +121,33 @@ EOF
 }
 
 # -----------------------------------------------------------------------------
-# Authentication — uses your OS username, you type your existing password
+# Authentication
 # -----------------------------------------------------------------------------
+credentials_are_current() {
+    # Check if credentials exist AND were created by this version of the script
+    [ -f "${HTPASSWD_FILE}" ] && \
+    [ -f "${PASSWORD_FILE}" ] && \
+    [ -f "${AUTH_VERSION_FILE}" ] && \
+    [ "$(cat "${AUTH_VERSION_FILE}" 2>/dev/null)" = "${AUTH_VERSION}" ]
+}
+
 setup_password() {
-    if [ -f "${HTPASSWD_FILE}" ] && [ -f "${PASSWORD_FILE}" ]; then
+    if credentials_are_current; then
         local existing_user
         existing_user=$(head -1 "${HTPASSWD_FILE}" | cut -d: -f1)
         echo ""
-        echo -e "  ${BOLD}Existing credentials found:${NC}"
+        echo -e "  ${BOLD}Existing credentials:${NC}"
         echo -e "    User: ${G}${existing_user}${NC}"
         echo -e "    Pass: (stored in ${PASSWORD_FILE})"
         echo -e "    Use --reset-password to change."
         echo ""
         return 0
+    fi
+
+    # Old or missing credentials — force fresh setup
+    if [ -f "${HTPASSWD_FILE}" ] || [ -f "${PASSWORD_FILE}" ]; then
+        warn "Old credentials from a previous version detected — resetting."
+        rm -f "${HTPASSWD_FILE}" "${PASSWORD_FILE}" "${AUTH_VERSION_FILE}"
     fi
 
     create_password
@@ -156,15 +158,14 @@ create_password() {
     echo -e "${BOLD}  Set up WebUI login${NC}"
     echo ""
 
-    # Default to current OS username
     local default_user
     default_user=$(whoami)
     read -rp "  Username [${default_user}]: " input_user
     local auth_user="${input_user:-${default_user}}"
 
-    # Ask for their existing OS password
     echo ""
-    echo "  Enter the password you use to log into this Ubuntu machine."
+    echo "  Enter the password you want for the WebUI."
+    echo "  (Tip: use your Ubuntu login password so you don't forget it.)"
     echo "  (Stored locally in ${CONFIG_DIR} — not sent anywhere.)"
     echo ""
 
@@ -187,12 +188,12 @@ create_password() {
         break
     done
 
-    # Generate htpasswd (openssl present on all Ubuntu variants)
     local hashed
     hashed=$(openssl passwd -apr1 "${auth_pass}")
     echo "${auth_user}:${hashed}" > "${HTPASSWD_FILE}"
     echo -n "${auth_pass}" > "${PASSWORD_FILE}"
-    chmod 600 "${HTPASSWD_FILE}" "${PASSWORD_FILE}"
+    echo -n "${AUTH_VERSION}" > "${AUTH_VERSION_FILE}"
+    chmod 600 "${HTPASSWD_FILE}" "${PASSWORD_FILE}" "${AUTH_VERSION_FILE}"
 
     echo ""
     info "Credentials saved for user: ${auth_user}"
@@ -200,19 +201,9 @@ create_password() {
 }
 
 # -----------------------------------------------------------------------------
-# Nginx config generation
+# Nginx config
 # -----------------------------------------------------------------------------
 generate_nginx_conf() {
-    local mode="$1"  # "secure" or "open"
-    local netdata_port="${NETDATA_INTERNAL_PORT}"
-    local listen_port="${DEFAULT_PORT}"
-
-    # In nologin/open mode, Netdata listens on the public port directly
-    # but we still proxy through nginx for consistency and future custom tabs
-    if [ "${mode}" = "open" ]; then
-        netdata_port="${DEFAULT_PORT}"
-    fi
-
     cat > "${NGINX_CONF}" << NGINXEOF
 worker_processes 1;
 error_log /var/log/nginx/error.log warn;
@@ -222,35 +213,27 @@ events { worker_connections 128; }
 
 http {
     upstream netdata {
-        server 127.0.0.1:${netdata_port};
+        server 127.0.0.1:${NETDATA_INTERNAL_PORT};
         keepalive 64;
     }
 
     server {
-        listen ${listen_port};
-NGINXEOF
-
-    if [ "${mode}" = "secure" ]; then
-        cat >> "${NGINX_CONF}" << 'NGINXEOF'
+        listen ${DEFAULT_PORT};
 
         # Basic auth — nothing visible until you log in
         auth_basic "Nosana WebUI";
         auth_basic_user_file /etc/nginx/.htpasswd;
-NGINXEOF
-    fi
-
-    cat >> "${NGINX_CONF}" << 'NGINXEOF'
 
         location / {
             proxy_pass http://netdata;
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header Host \$host;
+            proxy_set_header X-Real-IP \$remote_addr;
+            proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto \$scheme;
 
             # WebSocket support (Netdata live charts)
             proxy_http_version 1.1;
-            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Upgrade \$http_upgrade;
             proxy_set_header Connection "upgrade";
 
             proxy_connect_timeout 60s;
@@ -269,11 +252,11 @@ open_firewall() {
     local public_port="$1"
     if command -v ufw >/dev/null 2>&1; then
         if sudo ufw status 2>/dev/null | grep -q "Status: active"; then
-            step "UFW: opening ${public_port}, blocking ${NETDATA_INTERNAL_PORT}..."
+            step "UFW: allowing ${public_port}, blocking ${NETDATA_INTERNAL_PORT}..."
             sudo ufw allow "${public_port}"/tcp comment "Nosana WebUI" >/dev/null 2>&1 || true
             sudo ufw deny "${NETDATA_INTERNAL_PORT}"/tcp comment "Nosana internal" >/dev/null 2>&1 || true
             sudo ufw reload >/dev/null 2>&1 || true
-            info "UFW: ${public_port} open, ${NETDATA_INTERNAL_PORT} blocked."
+            info "UFW configured."
         fi
     fi
 }
@@ -332,24 +315,36 @@ do_status() {
 # Launch Netdata
 # -----------------------------------------------------------------------------
 launch_netdata() {
-    local bind_addr="$1"
-    local bind_port="$2"
+    local port_mapping="$1"  # e.g. "127.0.0.1:19998:19999" or "19999:19999"
 
     step "Pulling latest Netdata image..."
     docker pull "${NETDATA_IMAGE}"
 
-    step "Launching Netdata (bound to ${bind_addr}:${bind_port})..."
+    step "Launching Netdata..."
+
+    # KEY DESIGN: We do NOT use --network=host.
+    # Instead, Docker port mapping controls who can reach Netdata:
+    #   Secure mode:  -p 127.0.0.1:19998:19999  (localhost only)
+    #   Nologin mode: -p 0.0.0.0:PORT:19999     (open to network)
+    #
+    # Host monitoring still works because we mount /proc, /sys, docker socket,
+    # and use --pid=host. Netdata reads host stats from these mounts, not from
+    # the network namespace.
 
     local -a cmd=(
         docker run -d
         --name "${NETDATA_CONTAINER}"
         --hostname "nosana-$(hostname)"
         --restart unless-stopped
+
+        # Host visibility (these are what enable real host monitoring)
         --pid=host
-        --network=host
         --cap-add SYS_PTRACE
         --cap-add SYS_ADMIN
         --security-opt apparmor=unconfined
+
+        # Port mapping — this is how we control access
+        -p "${port_mapping}"
 
         # Host filesystem (read-only)
         -v /proc:/host/proc:ro
@@ -364,7 +359,6 @@ launch_netdata() {
         -v /var/run/docker.sock:/var/run/docker.sock:ro
 
         # Persistent storage
-        -v netdata-config:/etc/netdata
         -v netdata-lib:/var/lib/netdata
         -v netdata-cache:/var/cache/netdata
 
@@ -390,17 +384,10 @@ launch_netdata() {
         warn "No NVIDIA GPU detected."
     fi
 
-    # Image name
     cmd+=("${NETDATA_IMAGE}")
 
-    # CRITICAL: Force bind address via -W command-line flag.
-    # This overrides ANY config file, including stale settings in volumes.
-    # This is the fix for the auth bypass bug — without this, Netdata
-    # ignores our config file overrides and binds to 0.0.0.0:19999.
-    cmd+=(-W "set web bind to = ${bind_addr}:${bind_port}")
-
     if "${cmd[@]}"; then
-        info "Netdata started."
+        info "Netdata container started."
     else
         err "Netdata failed. Check: docker logs ${NETDATA_CONTAINER}"
         exit 1
@@ -408,39 +395,56 @@ launch_netdata() {
 
     # Wait for Netdata to be ready
     step "Waiting for Netdata to initialize..."
-    local retries=15
+    local check_addr
+    # Extract the host:port part from the port mapping (left side of the last colon pair)
+    if [[ "${port_mapping}" == 127.0.0.1:* ]]; then
+        check_addr="127.0.0.1:${NETDATA_INTERNAL_PORT}"
+    else
+        check_addr="127.0.0.1:${DEFAULT_PORT}"
+    fi
+
+    local retries=20
     while [ $retries -gt 0 ]; do
-        if curl -sf "http://${bind_addr}:${bind_port}/api/v1/info" >/dev/null 2>&1; then
-            info "Netdata responding on ${bind_addr}:${bind_port}"
+        if curl -sf "http://${check_addr}/api/v1/info" >/dev/null 2>&1; then
+            info "Netdata responding on ${check_addr}"
             return 0
         fi
         retries=$((retries - 1))
         sleep 2
     done
-    warn "Netdata not responding after 30s — may still be starting."
-    warn "Check: docker logs ${NETDATA_CONTAINER}"
+
+    warn "Netdata not responding after 40s."
+    echo ""
+    echo "  Checking container status..."
+    local status
+    status=$(docker inspect -f '{{.State.Status}}' "${NETDATA_CONTAINER}" 2>/dev/null || echo "unknown")
+    echo "  Container status: ${status}"
+    if [ "${status}" = "running" ]; then
+        echo "  Last 10 log lines:"
+        docker logs --tail 10 "${NETDATA_CONTAINER}" 2>&1 | sed 's/^/    /'
+    fi
+    echo ""
+    warn "Continuing anyway — Netdata may need more time on first start."
 }
 
 # -----------------------------------------------------------------------------
-# Launch nginx proxy
+# Launch nginx auth proxy
 # -----------------------------------------------------------------------------
 launch_proxy() {
     step "Pulling nginx image..."
     docker pull "${NGINX_IMAGE}"
 
-    step "Launching proxy on port ${DEFAULT_PORT}..."
+    step "Launching auth proxy on port ${DEFAULT_PORT}..."
 
+    # Nginx uses --network=host so it can reach Netdata on 127.0.0.1:19998
     local -a cmd=(
         docker run -d
         --name "${PROXY_CONTAINER}"
         --restart unless-stopped
         --network=host
         -v "${NGINX_CONF}:/etc/nginx/nginx.conf:ro"
+        -v "${HTPASSWD_FILE}:/etc/nginx/.htpasswd:ro"
     )
-
-    if [ -f "${HTPASSWD_FILE}" ]; then
-        cmd+=(-v "${HTPASSWD_FILE}:/etc/nginx/.htpasswd:ro")
-    fi
 
     cmd+=("${NGINX_IMAGE}")
 
@@ -451,24 +455,23 @@ launch_proxy() {
         exit 1
     fi
 
-    # Verify
-    step "Verifying proxy..."
+    # Verify proxy returns 401 (auth required)
+    step "Verifying auth proxy..."
     local retries=10
     while [ $retries -gt 0 ]; do
         local code
         code=$(curl -sf -o /dev/null -w "%{http_code}" "http://127.0.0.1:${DEFAULT_PORT}/" 2>/dev/null || echo "000")
-        if [ "${code}" = "401" ] || [ "${code}" = "200" ]; then
-            if [ "${code}" = "401" ]; then
-                info "Proxy verified — returns 401 (login required). Auth is working."
-            else
-                info "Proxy verified — returns 200 (open access)."
-            fi
+        if [ "${code}" = "401" ]; then
+            info "Auth working — browser will prompt for login (HTTP 401)."
             return 0
+        elif [ "${code}" = "200" ]; then
+            warn "Proxy returned 200 (no auth). Check nginx config."
+            return 1
         fi
         retries=$((retries - 1))
         sleep 1
     done
-    warn "Proxy not responding. Check: docker logs ${PROXY_CONTAINER}"
+    warn "Proxy not responding yet. Check: docker logs ${PROXY_CONTAINER}"
 }
 
 # -----------------------------------------------------------------------------
@@ -505,6 +508,8 @@ main() {
         status)   do_status; exit 0 ;;
         reset-pw)
             setup_config
+            # Force fresh credential creation
+            rm -f "${HTPASSWD_FILE}" "${PASSWORD_FILE}" "${AUTH_VERSION_FILE}"
             create_password
             if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${PROXY_CONTAINER}$"; then
                 docker restart "${PROXY_CONTAINER}" >/dev/null
@@ -524,26 +529,32 @@ main() {
     cleanup_stale
 
     if [ "${nologin}" = true ]; then
-        # ── NOLOGIN MODE ──
+        # ══════════════════════════════════════
+        # NOLOGIN MODE — Netdata open on network
+        # ══════════════════════════════════════
         info "Mode: anonymous (no login required)"
         echo ""
 
-        # Netdata on internal port, nginx proxies openly on public port
-        launch_netdata "127.0.0.1" "${NETDATA_INTERNAL_PORT}"
-        generate_nginx_conf "open"
-        launch_proxy
+        # Netdata directly accessible on all interfaces
+        launch_netdata "0.0.0.0:${port}:19999"
+
+        # No nginx needed in open mode
     else
-        # ── SECURE MODE ──
+        # ══════════════════════════════════════
+        # SECURE MODE — Netdata behind auth proxy
+        # ══════════════════════════════════════
         info "Mode: login required"
 
         setup_password
 
-        # Netdata on localhost only, nginx adds auth on public port
-        launch_netdata "127.0.0.1" "${NETDATA_INTERNAL_PORT}"
-        generate_nginx_conf "secure"
+        # Netdata only on localhost (Docker enforces this — no config to override)
+        launch_netdata "127.0.0.1:${NETDATA_INTERNAL_PORT}:19999"
+
+        # Nginx with basic auth on the public port
+        generate_nginx_conf
         launch_proxy
 
-        # Block direct access to Netdata's internal port
+        # Firewall: allow public port, block internal
         open_firewall "${port}"
     fi
 
@@ -568,7 +579,7 @@ main() {
         cred_user=$(head -1 "${HTPASSWD_FILE}" | cut -d: -f1)
         echo -e "  ${BOLD}Mode:${NC}     Login required"
         echo -e "  ${BOLD}User:${NC}     ${G}${cred_user}${NC}"
-        echo -e "  ${BOLD}Pass:${NC}     (your OS password — stored in ${PASSWORD_FILE})"
+        echo -e "  ${BOLD}Pass:${NC}     (your password — stored in ${PASSWORD_FILE})"
     fi
 
     echo ""
