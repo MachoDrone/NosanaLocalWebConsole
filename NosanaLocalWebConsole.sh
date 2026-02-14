@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# attempt use: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
 echo "v0.00.01" #increment with each edit
 sleep 3 #slight pause to focus on updates while testing
 # =============================================================================
