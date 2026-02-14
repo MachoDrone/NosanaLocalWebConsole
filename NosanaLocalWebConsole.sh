@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-echo "v0.00.06" # increment with each edit
+echo "v0.00.07" # increment with each edit
 sleep 3
 # =============================================================================
 # Nosana WebUI — Netdata Launcher
@@ -10,7 +10,7 @@ sleep 3
 #
 # Usage:
 # bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-# ... --nologin # anonymous mode, no sign-in screen
+# ... --nologin # anonymous mode (no login, full open access)
 # ... --stop     # stop the container
 # ... --status   # show status
 #
@@ -103,16 +103,29 @@ EOF
 }
 
 # -----------------------------------------------------------------------------
-# Anonymous / no-login mode (disables Cloud sign-in screen)
+# Anonymous mode (no login, full open access)
 # -----------------------------------------------------------------------------
 setup_nologin() {
-    if [ ! -f "${CONFIG_DIR}/overrides/nologin.conf" ]; then
-        cat > "${CONFIG_DIR}/overrides/nologin.conf" << 'EOF'
+    cat > "${CONFIG_DIR}/overrides/nologin.conf" << 'EOF'
 [cloud]
     enabled = no
+[web]
+    bearer token protection = no
 EOF
-        info "Anonymous mode enabled (no sign-in screen)"
-    fi
+    info "Anonymous mode enabled (no login required)"
+}
+
+# -----------------------------------------------------------------------------
+# Secure mode (Cloud sign-in / SSO required)
+# -----------------------------------------------------------------------------
+setup_secure() {
+    cat > "${CONFIG_DIR}/overrides/security.conf" << 'EOF'
+[cloud]
+    enabled = yes
+[web]
+    bearer token protection = yes
+EOF
+    info "Secure mode enabled (Cloud sign-in required)"
 }
 
 # -----------------------------------------------------------------------------
@@ -251,9 +264,9 @@ do_launch() {
         echo -e " ${BOLD}Update:${NC} Re-run this script"
 
         if [ "${nologin}" = true ]; then
-            echo -e " ${BOLD}Mode:${NC} Anonymous (no sign-in)"
+            echo -e " ${BOLD}Mode:${NC} Anonymous (no login)"
         else
-            echo -e " ${BOLD}Mode:${NC} Sign-in required (Netdata Cloud)"
+            echo -e " ${BOLD}Mode:${NC} Secure (Cloud sign-in required)"
         fi
 
         echo -e "${BOLD}════════════════════════════════════════════════════${NC}"
@@ -281,7 +294,7 @@ main() {
             --help|-h)
                 echo "Usage: $0 [--port PORT] [--nologin] [--stop] [--status] [--help]"
                 echo ""
-                echo " --nologin   Anonymous mode (no Cloud sign-in screen)"
+                echo " --nologin   Anonymous mode (no login, full open access)"
                 exit 0
                 ;;
             *) err "Unknown option: $1"; exit 1 ;;
@@ -300,12 +313,14 @@ main() {
     check_docker
     setup_config
 
-    # Default = login required. Only create the disable file when --nologin is used.
+    # Default = secure (Cloud sign-in required)
+    # --nologin = anonymous (no login)
     if [ "${nologin}" = true ]; then
+        rm -f "${CONFIG_DIR}/overrides/security.conf" 2>/dev/null || true
         setup_nologin
-    elif [ -f "${CONFIG_DIR}/overrides/nologin.conf" ]; then
-        rm -f "${CONFIG_DIR}/overrides/nologin.conf"
-        info "Cloud sign-in enabled (login required)"
+    else
+        rm -f "${CONFIG_DIR}/overrides/nologin.conf" 2>/dev/null || true
+        setup_secure
     fi
 
     do_launch "${port}" "${nologin}"
