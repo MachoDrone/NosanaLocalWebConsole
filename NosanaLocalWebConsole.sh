@@ -3,60 +3,140 @@
 echo "v0.01.4"
 sleep 3
 # =============================================================================
-# Nosana WebUI — Netdata Launcher
+# NOSweb — GPU Host Monitoring Stack
 #
-# Deploys Netdata in Docker with full host monitoring + NVIDIA GPU support.
-# Default: login required (nginx basic auth). Use --nologin for open access.
+# Deploys five containers per host. Nothing installed on the host.
+#   NOSweb-netdata      System metrics (CPU, RAM, disk, network, Docker)
+#   NOSweb-dcgm         NVIDIA GPU detailed metrics (temp, power, clocks, etc.)
+#   NOSweb-prometheus    Time-series database — scrapes all metrics
+#   NOSweb-grafana       Dashboards — the main UI you'll use
+#   NOSweb-proxy         Nginx auth gateway — single entry point
 #
-# Auth: your OS username + password you set at first run.
-# Config in ~/.nosana-webui/ survives container restarts/purges.
+# QUICK START (one command, works on any Nosana host):
+#   bash <(wget -qO- https://raw.githubusercontent.com/.../NosanaLocalWebConsole.sh)
 #
-# Tested: Ubuntu 20.04 – 24.04 (Desktop, Server, Minimal, Core)
-# Requires: Docker (already present on Nosana hosts)
+# OPTIONS:
+#   --group "my-farm"     Assign this host to a named group (default: "Unassigned").
+#                         Only hosts in the same group see each other.
+#                         Saved after first run — no need to repeat on reboot.
+#   --nologin             No password required (open access).
+#   --port PORT           Public port (default: 19999).
+#   --stop                Stop and remove all NOSweb containers.
+#   --status              Show status of all containers.
+#   --reset-password      Change stored login credentials.
+#
+# GROUPS:
+#   Groups let operators separate hosts into independent sets.
+#   Two operators on the same LAN with different group names will never
+#   see each other's hosts. If you don't care about groups, do nothing —
+#   the default group is "Unassigned" and all hosts see each other.
+#
+# NETWORKING — HOW HOSTS FIND EACH OTHER (Phase 2+):
+#   Hosts on the same local network (LAN) find each other automatically.
+#   No setup needed — just run the script on each host.
+#
+#   If you have hosts on DIFFERENT networks (different locations, data
+#   centers, subnets, or behind different routers), they cannot discover
+#   each other automatically because network broadcasts don't cross
+#   router boundaries. In that case, point the remote host at any one
+#   host it CAN reach:
+#
+#     --peer 192.168.0.114
+#
+#   That single connection is enough. The remote host learns about all
+#   other hosts through the peer, and the peer tells everyone about the
+#   new host. You only need ONE --peer flag, not a list of all hosts.
+#
+#   Example: You have 10 hosts at home and 2 at a data center.
+#     - The 10 home hosts find each other automatically (same LAN).
+#     - The 2 data center hosts find each other automatically (same LAN).
+#     - Run ONE data center host with: --peer <any-home-host-IP>
+#     - Now all 12 hosts can see each other.
+#
+# AFTER A DOCKER PRUNE:
+#   If someone runs "docker system prune --all" or "docker volume prune",
+#   just re-run this script. All settings live in ~/.nosana-webui/ on the
+#   host filesystem, not in Docker. You will lose chart history but
+#   everything else (login, group, dashboards) comes back as it was.
+#
 # =============================================================================
 set -euo pipefail
 
 # -----------------------------------------------------------------------------
 # Config
 # -----------------------------------------------------------------------------
-NETDATA_CONTAINER="nosana-netdata"
-PROXY_CONTAINER="nosana-proxy"
+SCRIPT_VERSION="0.02.0"
 CONFIG_DIR="${HOME}/.nosana-webui"
-NETDATA_IMAGE="netdata/netdata:stable"
-NGINX_IMAGE="nginx:alpine"
+DOCKER_NETWORK="NOSweb-net"
+
+# Container names
+C_NETDATA="NOSweb-netdata"
+C_DCGM="NOSweb-dcgm"
+C_PROMETHEUS="NOSweb-prometheus"
+C_GRAFANA="NOSweb-grafana"
+C_PROXY="NOSweb-proxy"
+
+# Legacy names to clean up
+LEGACY_CONTAINERS="nosana-netdata nosana-proxy nosana-webui"
+
+# Images
+IMG_NETDATA="netdata/netdata:stable"
+IMG_DCGM="nvidia/dcgm-exporter:latest"
+IMG_PROMETHEUS="prom/prometheus:latest"
+IMG_GRAFANA="grafana/grafana:latest"
+IMG_NGINX="nginx:alpine"
+
+# Internal ports (on Docker network, not exposed to host)
+PORT_NETDATA=19999
+PORT_DCGM=9400
+PORT_PROMETHEUS=9090
+PORT_GRAFANA=3000
+
+# Public port (nginx proxy)
 DEFAULT_PORT=19999
-NETDATA_INTERNAL_PORT=19998
+
+# Persistent paths (survive docker prune)
 HTPASSWD_FILE="${CONFIG_DIR}/.htpasswd"
 PASSWORD_FILE="${CONFIG_DIR}/.password"
 AUTH_VERSION_FILE="${CONFIG_DIR}/.auth_version"
+GROUP_FILE="${CONFIG_DIR}/.group"
 NGINX_CONF="${CONFIG_DIR}/nginx.conf"
+PROM_DIR="${CONFIG_DIR}/prometheus"
+PROM_CONF="${PROM_DIR}/prometheus.yml"
+PROM_TARGETS="${PROM_DIR}/targets"
+GRAFANA_DIR="${CONFIG_DIR}/grafana"
+GRAFANA_PROV="${GRAFANA_DIR}/provisioning"
+GRAFANA_DASH="${GRAFANA_DIR}/dashboards"
+
 AUTH_VERSION="2"
+DEFAULT_GROUP="Unassigned"
+
+# Runtime flag
+NOLOGIN=false
 
 # Terminal colors
 if [ -t 1 ]; then
     R='\033[0;31m' G='\033[0;32m' Y='\033[1;33m' B='\033[0;34m'
-    C='\033[0;36m' BOLD='\033[1m' NC='\033[0m'
+    C_CLR='\033[0;36m' BOLD='\033[1m' NC='\033[0m'
 else
-    R='' G='' Y='' B='' C='' BOLD='' NC=''
+    R='' G='' Y='' B='' C_CLR='' BOLD='' NC=''
 fi
 
 info()  { echo -e "${G}[OK]${NC}    $*"; }
 warn()  { echo -e "${Y}[WARN]${NC}  $*"; }
 err()   { echo -e "${R}[ERR]${NC}   $*"; }
-step()  { echo -e "${C}[....]${NC}  $*"; }
+step()  { echo -e "${C_CLR}[....]${NC}  $*"; }
 
 # -----------------------------------------------------------------------------
 # Checks
 # -----------------------------------------------------------------------------
 check_docker() {
     if ! command -v docker &>/dev/null; then
-        err "Docker not found."
-        echo "  Nosana hosts should already have Docker installed."
-        echo "  https://learn.nosana.com/hosts/grid-ubuntu"
+        err "Docker not found. Nosana hosts should have Docker installed."
         exit 1
     fi
     if ! docker info &>/dev/null 2>&1; then
-        err "Docker installed but not running or lacking permission."
+        err "Docker not running or permission denied."
         echo "  Try: sudo systemctl start docker"
         echo "  Or:  sudo usermod -aG docker \$USER  (then re-login)"
         exit 1
@@ -73,41 +153,65 @@ check_nvidia_runtime() {
     [ -f /usr/bin/nvidia-container-runtime ]
 }
 
+get_hostname() { hostname 2>/dev/null || echo "unknown"; }
+get_ip() { hostname -I 2>/dev/null | awk '{print $1}'; }
+
 # -----------------------------------------------------------------------------
-# Cleanup stale state
+# Cleanup
 # -----------------------------------------------------------------------------
-cleanup_stale() {
-    for c in "${PROXY_CONTAINER}" "${NETDATA_CONTAINER}" "nosana-webui"; do
+cleanup_containers() {
+    local all_containers="${C_PROXY} ${C_GRAFANA} ${C_PROMETHEUS} ${C_DCGM} ${C_NETDATA} ${LEGACY_CONTAINERS}"
+    for c in ${all_containers}; do
         if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${c}$"; then
-            step "Removing old container: ${c}"
+            step "Removing container: ${c}"
             docker stop "${c}" 2>/dev/null || true
             docker rm "${c}" 2>/dev/null || true
         fi
     done
 }
 
+cleanup_legacy_volumes() {
+    for v in netdata-config; do
+        if docker volume ls -q 2>/dev/null | grep -q "^${v}$"; then
+            step "Removing legacy volume: ${v}"
+            docker volume rm "${v}" 2>/dev/null || true
+        fi
+    done
+}
+
 # -----------------------------------------------------------------------------
-# Persistent config directory
+# Docker network
+# -----------------------------------------------------------------------------
+ensure_network() {
+    if ! docker network inspect "${DOCKER_NETWORK}" &>/dev/null; then
+        step "Creating Docker network: ${DOCKER_NETWORK}"
+        docker network create "${DOCKER_NETWORK}" >/dev/null
+    fi
+    info "Docker network: ${DOCKER_NETWORK}"
+}
+
+# -----------------------------------------------------------------------------
+# Config directory
 # -----------------------------------------------------------------------------
 setup_config() {
-    mkdir -p "${CONFIG_DIR}/custom-tabs"
-
-    if [ ! -f "${CONFIG_DIR}/config.json" ]; then
-        cat > "${CONFIG_DIR}/config.json" << 'EOF'
-{
-    "version": "1.0.0",
-    "custom_buttons": [
-        { "label": "GPU Status",         "command": "nvidia-smi" },
-        { "label": "GPU Processes",       "command": "nvidia-smi pmon -c 1" },
-        { "label": "Docker Containers",   "command": "docker ps --format 'table {{.Names}}\\t{{.Status}}\\t{{.Ports}}'" },
-        { "label": "Nosana Node Logs",    "command": "docker logs --tail 50 nosana-node 2>/dev/null || echo 'Nosana node container not found'" },
-        { "label": "Disk Usage",          "command": "df -h" },
-        { "label": "Memory",              "command": "free -h" },
-        { "label": "Top Processes",        "command": "ps aux --sort=-%mem | head -20" }
-    ]
+    mkdir -p "${CONFIG_DIR}" "${PROM_DIR}" "${PROM_TARGETS}" \
+             "${GRAFANA_PROV}/datasources" "${GRAFANA_PROV}/dashboards" \
+             "${GRAFANA_DASH}"
 }
-EOF
-        info "Created config at ${CONFIG_DIR}/config.json"
+
+# -----------------------------------------------------------------------------
+# Group
+# -----------------------------------------------------------------------------
+setup_group() {
+    local group_arg="$1"
+    if [ -n "${group_arg}" ]; then
+        echo -n "${group_arg}" > "${GROUP_FILE}"
+        info "Group: ${group_arg}"
+    elif [ ! -f "${GROUP_FILE}" ]; then
+        echo -n "${DEFAULT_GROUP}" > "${GROUP_FILE}"
+        info "Group: ${DEFAULT_GROUP} (use --group to change)"
+    else
+        info "Group: $(cat "${GROUP_FILE}")"
     fi
 }
 
@@ -115,8 +219,7 @@ EOF
 # Authentication
 # -----------------------------------------------------------------------------
 credentials_are_current() {
-    [ -f "${HTPASSWD_FILE}" ] && \
-    [ -f "${PASSWORD_FILE}" ] && \
+    [ -f "${HTPASSWD_FILE}" ] && [ -f "${PASSWORD_FILE}" ] && \
     [ -f "${AUTH_VERSION_FILE}" ] && \
     [ "$(cat "${AUTH_VERSION_FILE}" 2>/dev/null)" = "${AUTH_VERSION}" ]
 }
@@ -133,12 +236,10 @@ setup_password() {
         echo ""
         return 0
     fi
-
-    if [ -f "${HTPASSWD_FILE}" ] || [ -f "${PASSWORD_FILE}" ]; then
-        warn "Old credentials from a previous version detected — resetting."
+    [ -f "${HTPASSWD_FILE}" ] || [ -f "${PASSWORD_FILE}" ] && {
+        warn "Old credentials detected — resetting."
         rm -f "${HTPASSWD_FILE}" "${PASSWORD_FILE}" "${AUTH_VERSION_FILE}"
-    fi
-
+    }
     create_password
 }
 
@@ -146,37 +247,23 @@ create_password() {
     echo ""
     echo -e "${BOLD}  Set up WebUI login${NC}"
     echo ""
-
     local default_user
     default_user=$(whoami)
     read -rp "  Username [${default_user}]: " input_user
     local auth_user="${input_user:-${default_user}}"
-
     echo ""
     echo "  Enter the password you want for the WebUI."
     echo "  (Tip: use your Ubuntu login password so you don't forget it.)"
-    echo "  (Stored locally in ${CONFIG_DIR} — not sent anywhere.)"
     echo ""
-
     local auth_pass=""
     while true; do
-        read -rsp "  Password: " auth_pass
-        echo ""
-        if [ -z "${auth_pass}" ]; then
-            warn "Password cannot be empty."
-            continue
-        fi
+        read -rsp "  Password: " auth_pass; echo ""
+        [ -z "${auth_pass}" ] && { warn "Cannot be empty."; continue; }
         local confirm_pass=""
-        read -rsp "  Confirm:  " confirm_pass
-        echo ""
-        if [ "${auth_pass}" != "${confirm_pass}" ]; then
-            err "Passwords don't match. Try again."
-            echo ""
-            continue
-        fi
+        read -rsp "  Confirm:  " confirm_pass; echo ""
+        [ "${auth_pass}" != "${confirm_pass}" ] && { err "Passwords don't match."; echo ""; continue; }
         break
     done
-
     local hashed
     hashed=$(openssl passwd -apr1 "${auth_pass}")
     echo "${auth_user}:${hashed}" > "${HTPASSWD_FILE}"
@@ -184,17 +271,288 @@ create_password() {
     echo -n "${AUTH_VERSION}" > "${AUTH_VERSION_FILE}"
     chmod 644 "${HTPASSWD_FILE}"
     chmod 600 "${PASSWORD_FILE}" "${AUTH_VERSION_FILE}"
-
     echo ""
     info "Credentials saved for user: ${auth_user}"
     echo ""
 }
 
 # -----------------------------------------------------------------------------
-# Nginx config — based on Netdata official documentation
-# https://learn.netdata.cloud/docs/netdata-agent/configuration/securing-agents/running-the-agent-behind-a-reverse-proxy/nginx
+# Generate Prometheus config
+# -----------------------------------------------------------------------------
+generate_prometheus_config() {
+    local my_hostname
+    my_hostname=$(get_hostname)
+
+    cat > "${PROM_CONF}" << PROMEOF
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'netdata'
+    metrics_path: '/api/v1/allmetrics'
+    params:
+      format: ['prometheus']
+    honor_labels: true
+    file_sd_configs:
+      - files: ['/etc/prometheus/targets/netdata.json']
+        refresh_interval: 30s
+
+  - job_name: 'dcgm'
+    file_sd_configs:
+      - files: ['/etc/prometheus/targets/dcgm.json']
+        refresh_interval: 30s
+PROMEOF
+
+    # Phase 1: local targets (container names on Docker network)
+    cat > "${PROM_TARGETS}/netdata.json" << TEOF
+[{"targets": ["${C_NETDATA}:${PORT_NETDATA}"], "labels": {"host": "${my_hostname}"}}]
+TEOF
+
+    cat > "${PROM_TARGETS}/dcgm.json" << TEOF
+[{"targets": ["${C_DCGM}:${PORT_DCGM}"], "labels": {"host": "${my_hostname}"}}]
+TEOF
+
+    info "Prometheus config generated."
+}
+
+# -----------------------------------------------------------------------------
+# Generate Grafana provisioning
+# -----------------------------------------------------------------------------
+generate_grafana_provisioning() {
+    cat > "${GRAFANA_PROV}/datasources/prometheus.yml" << 'DSEOF'
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://NOSweb-prometheus:9090
+    isDefault: true
+    uid: prometheus
+    editable: true
+DSEOF
+
+    cat > "${GRAFANA_PROV}/dashboards/dashboards.yml" << 'DPEOF'
+apiVersion: 1
+providers:
+  - name: 'NOSweb'
+    orgId: 1
+    folder: ''
+    type: file
+    disableDeletion: false
+    editable: true
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false
+DPEOF
+
+    info "Grafana provisioning generated."
+}
+
+# -----------------------------------------------------------------------------
+# Generate Grafana dashboards
+# -----------------------------------------------------------------------------
+generate_gpu_dashboard() {
+    cat > "${GRAFANA_DASH}/gpu-overview.json" << 'GPUEOF'
+{
+  "uid": "gpu-overview",
+  "title": "GPU Overview",
+  "description": "NVIDIA GPU metrics from DCGM Exporter",
+  "tags": ["gpu", "nvidia", "dcgm"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": {"from": "now-1h", "to": "now"},
+  "panels": [
+    {
+      "id": 1, "type": "gauge", "title": "GPU Utilization",
+      "gridPos": {"h": 6, "w": 6, "x": 0, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "DCGM_FI_DEV_GPU_UTIL", "legendFormat": "GPU {{gpu}}"}],
+      "fieldConfig": {"defaults": {"unit": "percent", "min": 0, "max": 100,
+        "thresholds": {"mode": "absolute", "steps": [
+          {"value": null, "color": "green"}, {"value": 70, "color": "yellow"}, {"value": 90, "color": "red"}
+        ]}}}
+    },
+    {
+      "id": 2, "type": "gauge", "title": "Memory Used",
+      "gridPos": {"h": 6, "w": 6, "x": 6, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "DCGM_FI_DEV_FB_USED / (DCGM_FI_DEV_FB_USED + DCGM_FI_DEV_FB_FREE) * 100", "legendFormat": "GPU {{gpu}}"}],
+      "fieldConfig": {"defaults": {"unit": "percent", "min": 0, "max": 100,
+        "thresholds": {"mode": "absolute", "steps": [
+          {"value": null, "color": "green"}, {"value": 70, "color": "yellow"}, {"value": 90, "color": "red"}
+        ]}}}
+    },
+    {
+      "id": 3, "type": "gauge", "title": "Temperature",
+      "gridPos": {"h": 6, "w": 6, "x": 12, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "DCGM_FI_DEV_GPU_TEMP", "legendFormat": "GPU {{gpu}}"}],
+      "fieldConfig": {"defaults": {"unit": "celsius", "min": 0, "max": 100,
+        "thresholds": {"mode": "absolute", "steps": [
+          {"value": null, "color": "green"}, {"value": 70, "color": "yellow"}, {"value": 85, "color": "red"}
+        ]}}}
+    },
+    {
+      "id": 4, "type": "gauge", "title": "Power Draw",
+      "gridPos": {"h": 6, "w": 6, "x": 18, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "DCGM_FI_DEV_POWER_USAGE", "legendFormat": "GPU {{gpu}}"}],
+      "fieldConfig": {"defaults": {"unit": "watt", "min": 0,
+        "thresholds": {"mode": "absolute", "steps": [
+          {"value": null, "color": "green"}, {"value": 200, "color": "yellow"}, {"value": 300, "color": "red"}
+        ]}}}
+    },
+    {
+      "id": 5, "type": "timeseries", "title": "GPU Utilization Over Time",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 6},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "DCGM_FI_DEV_GPU_UTIL", "legendFormat": "GPU {{gpu}}"}],
+      "fieldConfig": {"defaults": {"unit": "percent", "max": 100, "color": {"mode": "palette-classic"},
+        "custom": {"lineWidth": 2, "fillOpacity": 15, "spanNulls": true}}}
+    },
+    {
+      "id": 6, "type": "timeseries", "title": "GPU Memory Over Time (MiB)",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 6},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"refId": "A", "expr": "DCGM_FI_DEV_FB_USED", "legendFormat": "GPU {{gpu}} Used"},
+        {"refId": "B", "expr": "DCGM_FI_DEV_FB_FREE", "legendFormat": "GPU {{gpu}} Free"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "decmbytes", "color": {"mode": "palette-classic"},
+        "custom": {"lineWidth": 2, "fillOpacity": 15, "spanNulls": true}}}
+    },
+    {
+      "id": 7, "type": "timeseries", "title": "Temperature Over Time",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 14},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "DCGM_FI_DEV_GPU_TEMP", "legendFormat": "GPU {{gpu}}"}],
+      "fieldConfig": {"defaults": {"unit": "celsius", "color": {"mode": "palette-classic"},
+        "custom": {"lineWidth": 2, "fillOpacity": 10, "spanNulls": true,
+          "thresholdsStyle": {"mode": "line"}},
+        "thresholds": {"mode": "absolute", "steps": [
+          {"value": null, "color": "green"}, {"value": 80, "color": "red"}
+        ]}}}
+    },
+    {
+      "id": 8, "type": "timeseries", "title": "Power Draw Over Time",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 14},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "DCGM_FI_DEV_POWER_USAGE", "legendFormat": "GPU {{gpu}}"}],
+      "fieldConfig": {"defaults": {"unit": "watt", "color": {"mode": "palette-classic"},
+        "custom": {"lineWidth": 2, "fillOpacity": 15, "spanNulls": true}}}
+    },
+    {
+      "id": 9, "type": "timeseries", "title": "Clock Speeds",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 22},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"refId": "A", "expr": "DCGM_FI_DEV_SM_CLOCK", "legendFormat": "GPU {{gpu}} SM (MHz)"},
+        {"refId": "B", "expr": "DCGM_FI_DEV_MEM_CLOCK", "legendFormat": "GPU {{gpu}} Mem (MHz)"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "rotmhz", "color": {"mode": "palette-classic"},
+        "custom": {"lineWidth": 2, "fillOpacity": 10, "spanNulls": true}}}
+    },
+    {
+      "id": 10, "type": "timeseries", "title": "PCIe Throughput",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 22},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"refId": "A", "expr": "DCGM_FI_DEV_PCIE_TX_THROUGHPUT", "legendFormat": "GPU {{gpu}} TX"},
+        {"refId": "B", "expr": "DCGM_FI_DEV_PCIE_RX_THROUGHPUT", "legendFormat": "GPU {{gpu}} RX"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "KBs", "color": {"mode": "palette-classic"},
+        "custom": {"lineWidth": 2, "fillOpacity": 15, "spanNulls": true}}}
+    }
+  ]
+}
+GPUEOF
+}
+
+generate_host_dashboard() {
+    cat > "${GRAFANA_DASH}/host-overview.json" << 'HOSTEOF'
+{
+  "uid": "host-overview",
+  "title": "Host Overview",
+  "description": "System metrics from Netdata via Prometheus",
+  "tags": ["host", "system", "netdata"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": {"from": "now-1h", "to": "now"},
+  "panels": [
+    {
+      "id": 1, "type": "timeseries", "title": "CPU Usage",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"refId": "A", "expr": "netdata_system_cpu_percentage_average{dimension=~\"user|system|softirq|irq\"}", "legendFormat": "{{dimension}}"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "percent", "color": {"mode": "palette-classic"},
+        "custom": {"lineWidth": 1, "fillOpacity": 30, "stacking": {"mode": "normal"}, "spanNulls": true}}}
+    },
+    {
+      "id": 2, "type": "timeseries", "title": "RAM Usage (MiB)",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"refId": "A", "expr": "netdata_system_ram_MiB_average{dimension=\"used\"}", "legendFormat": "Used"},
+        {"refId": "B", "expr": "netdata_system_ram_MiB_average{dimension=\"cached\"}", "legendFormat": "Cached"},
+        {"refId": "C", "expr": "netdata_system_ram_MiB_average{dimension=\"buffers\"}", "legendFormat": "Buffers"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "decmbytes", "color": {"mode": "palette-classic"},
+        "custom": {"lineWidth": 1, "fillOpacity": 30, "stacking": {"mode": "normal"}, "spanNulls": true}}}
+    },
+    {
+      "id": 3, "type": "timeseries", "title": "Network Traffic",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"refId": "A", "expr": "netdata_system_net_kilobits_persec_average{dimension=\"received\"}", "legendFormat": "Received"},
+        {"refId": "B", "expr": "netdata_system_net_kilobits_persec_average{dimension=\"sent\"}", "legendFormat": "Sent"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "Kbits", "color": {"mode": "palette-classic"},
+        "custom": {"lineWidth": 2, "fillOpacity": 15, "spanNulls": true}}}
+    },
+    {
+      "id": 4, "type": "timeseries", "title": "Disk I/O",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"refId": "A", "expr": "netdata_system_io_KiB_persec_average{dimension=\"in\"}", "legendFormat": "Read"},
+        {"refId": "B", "expr": "netdata_system_io_KiB_persec_average{dimension=\"out\"}", "legendFormat": "Write"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "KiBs", "color": {"mode": "palette-classic"},
+        "custom": {"lineWidth": 2, "fillOpacity": 15, "spanNulls": true}}}
+    }
+  ]
+}
+HOSTEOF
+}
+
+generate_dashboards() {
+    generate_gpu_dashboard
+    generate_host_dashboard
+    info "Grafana dashboards generated."
+}
+
+# -----------------------------------------------------------------------------
+# Generate Nginx config
+# Routes:  / → Grafana    /netdata/ → Netdata    /prometheus/ → Prometheus
 # -----------------------------------------------------------------------------
 generate_nginx_conf() {
+    # Build auth block
+    local auth_block=""
+    if [ "${NOLOGIN}" = false ] && [ -f "${HTPASSWD_FILE}" ]; then
+        auth_block='
+        auth_basic "NOSweb";
+        auth_basic_user_file /etc/nginx/.htpasswd;'
+    fi
+
     cat > "${NGINX_CONF}" << NGINXEOF
 worker_processes 1;
 error_log /var/log/nginx/error.log warn;
@@ -203,39 +561,64 @@ pid /tmp/nginx.pid;
 events { worker_connections 256; }
 
 http {
-    # Upstream definition — matches Netdata official nginx docs
-    upstream netdata {
-        server 127.0.0.1:${NETDATA_INTERNAL_PORT};
+    upstream netdata_backend {
+        server ${C_NETDATA}:${PORT_NETDATA};
         keepalive 1024;
     }
 
+    upstream grafana_backend {
+        server ${C_GRAFANA}:${PORT_GRAFANA};
+        keepalive 64;
+    }
+
     server {
-        listen ${DEFAULT_PORT};
+        listen 80;
+${auth_block}
 
-        # Basic auth — nothing visible until you log in
-        auth_basic "Nosana WebUI";
-        auth_basic_user_file /etc/nginx/.htpasswd;
-
+        # Default: Grafana dashboards
         location / {
-            # Headers per Netdata official nginx proxy documentation
+            proxy_set_header Host \$host;
+            proxy_set_header X-Real-IP \$remote_addr;
+            proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto \$scheme;
+            proxy_pass http://grafana_backend;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade \$http_upgrade;
+            proxy_set_header Connection "upgrade";
+        }
+
+        # Netdata at /netdata/ (official subfolder proxy config)
+        location = /netdata {
+            return 301 /netdata/;
+        }
+
+        location ~ /netdata/(?<ndpath>.*) {
+            proxy_redirect off;
+            proxy_set_header Host \$host;
             proxy_set_header X-Forwarded-Host \$host;
             proxy_set_header X-Forwarded-Server \$host;
             proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-            proxy_pass http://netdata;
             proxy_http_version 1.1;
             proxy_pass_request_headers on;
             proxy_set_header Connection "keep-alive";
             proxy_store off;
-
-            # Netdata compresses responses by default.
-            # Let it pass through to the browser as-is.
+            proxy_pass http://netdata_backend/\$ndpath\$is_args\$args;
             gzip on;
             gzip_proxied any;
             gzip_types *;
         }
+
+        # Prometheus at /prometheus/
+        location /prometheus/ {
+            proxy_pass http://${C_PROMETHEUS}:${PORT_PROMETHEUS}/;
+            proxy_set_header Host \$host;
+            proxy_set_header X-Real-IP \$remote_addr;
+        }
     }
 }
 NGINXEOF
+
+    info "Nginx config generated."
 }
 
 # -----------------------------------------------------------------------------
@@ -245,9 +628,8 @@ open_firewall() {
     local public_port="$1"
     if command -v ufw >/dev/null 2>&1; then
         if sudo ufw status 2>/dev/null | grep -q "Status: active"; then
-            step "UFW: allowing ${public_port}, blocking ${NETDATA_INTERNAL_PORT}..."
-            sudo ufw allow "${public_port}"/tcp comment "Nosana WebUI" >/dev/null 2>&1 || true
-            sudo ufw deny "${NETDATA_INTERNAL_PORT}"/tcp comment "Nosana internal" >/dev/null 2>&1 || true
+            step "UFW: allowing port ${public_port}..."
+            sudo ufw allow "${public_port}"/tcp comment "NOSweb" >/dev/null 2>&1 || true
             sudo ufw reload >/dev/null 2>&1 || true
             info "UFW configured."
         fi
@@ -255,11 +637,203 @@ open_firewall() {
 }
 
 # -----------------------------------------------------------------------------
+# Wait for HTTP endpoint
+# -----------------------------------------------------------------------------
+wait_for_http() {
+    local url="$1" label="$2" max_wait="${3:-30}"
+    local elapsed=0
+    step "Waiting for ${label}..."
+    while [ ${elapsed} -lt ${max_wait} ]; do
+        if curl -sf "${url}" >/dev/null 2>&1; then
+            info "${label} is ready."
+            return 0
+        fi
+        sleep 2; elapsed=$((elapsed + 2))
+    done
+    warn "${label} not responding after ${max_wait}s — may still be starting."
+    return 1
+}
+
+# Get container IP on Docker network
+container_ip() {
+    docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$1" 2>/dev/null
+}
+
+# -----------------------------------------------------------------------------
+# Launch containers
+# -----------------------------------------------------------------------------
+launch_netdata() {
+    step "Pulling Netdata..."
+    docker pull "${IMG_NETDATA}"
+
+    step "Launching Netdata..."
+    local -a cmd=(
+        docker run -d
+        --name "${C_NETDATA}"
+        --hostname "nosana-$(get_hostname)"
+        --restart unless-stopped
+        --network "${DOCKER_NETWORK}"
+        --pid=host
+        --cap-add SYS_PTRACE
+        --cap-add SYS_ADMIN
+        --security-opt apparmor=unconfined
+        -v /proc:/host/proc:ro
+        -v /sys:/host/sys:ro
+        -v /etc/os-release:/host/etc/os-release:ro
+        -v /etc/passwd:/host/etc/passwd:ro
+        -v /etc/group:/host/etc/group:ro
+        -v /var/log:/host/var/log:ro
+        -v /etc/localtime:/etc/localtime:ro
+        -v /var/run/docker.sock:/var/run/docker.sock:ro
+        -v netdata-lib:/var/lib/netdata
+        -v netdata-cache:/var/cache/netdata
+    )
+
+    if check_nvidia_runtime; then
+        info "NVIDIA runtime detected"
+        cmd+=(--gpus all)
+    elif check_gpu; then
+        warn "GPU found but nvidia-container-toolkit missing — direct device mount."
+        for dev in /dev/nvidia0 /dev/nvidiactl /dev/nvidia-uvm /dev/nvidia-uvm-tools; do
+            [ -e "$dev" ] && cmd+=(--device "${dev}:${dev}")
+        done
+        local smi_path
+        smi_path=$(command -v nvidia-smi 2>/dev/null || true)
+        [ -n "$smi_path" ] && cmd+=(-v "${smi_path}:${smi_path}:ro")
+    fi
+
+    cmd+=("${IMG_NETDATA}")
+    "${cmd[@]}" && info "Netdata started." || { err "Netdata failed."; return 1; }
+
+    local ip; ip=$(container_ip "${C_NETDATA}")
+    [ -n "$ip" ] && wait_for_http "http://${ip}:${PORT_NETDATA}/api/v1/info" "Netdata" 40 || true
+}
+
+launch_dcgm() {
+    if ! check_nvidia_runtime; then
+        warn "NVIDIA runtime not found — skipping DCGM exporter."
+        echo '[]' > "${PROM_TARGETS}/dcgm.json"
+        return 0
+    fi
+
+    step "Pulling DCGM exporter..."
+    if ! docker pull "${IMG_DCGM}" 2>/dev/null; then
+        warn "Could not pull DCGM image — skipping."
+        echo '[]' > "${PROM_TARGETS}/dcgm.json"
+        return 0
+    fi
+
+    step "Launching DCGM exporter..."
+    if docker run -d \
+        --name "${C_DCGM}" \
+        --restart unless-stopped \
+        --network "${DOCKER_NETWORK}" \
+        --gpus all \
+        --cap-add SYS_ADMIN \
+        "${IMG_DCGM}"; then
+        info "DCGM exporter started."
+    else
+        warn "DCGM failed to start."
+        echo '[]' > "${PROM_TARGETS}/dcgm.json"
+        return 0
+    fi
+
+    # DCGM crashes quickly on unsupported GPUs — verify it's still running
+    sleep 5
+    if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${C_DCGM}$"; then
+        warn "DCGM exporter crashed — GPU may not support DCGM."
+        warn "GPU metrics will use Netdata's nvidia-smi collector only."
+        echo '[]' > "${PROM_TARGETS}/dcgm.json"
+        docker rm "${C_DCGM}" 2>/dev/null || true
+    fi
+}
+
+launch_prometheus() {
+    step "Pulling Prometheus..."
+    docker pull "${IMG_PROMETHEUS}"
+
+    step "Launching Prometheus..."
+    docker run -d \
+        --name "${C_PROMETHEUS}" \
+        --restart unless-stopped \
+        --network "${DOCKER_NETWORK}" \
+        -v "${PROM_CONF}:/etc/prometheus/prometheus.yml:ro" \
+        -v "${PROM_TARGETS}:/etc/prometheus/targets:ro" \
+        -v NOSweb-prometheus-data:/prometheus \
+        "${IMG_PROMETHEUS}" \
+        --config.file=/etc/prometheus/prometheus.yml \
+        --storage.tsdb.retention.time=15d \
+        --web.enable-lifecycle \
+    && info "Prometheus started." || { err "Prometheus failed."; return 1; }
+
+    local ip; ip=$(container_ip "${C_PROMETHEUS}")
+    [ -n "$ip" ] && wait_for_http "http://${ip}:${PORT_PROMETHEUS}/-/ready" "Prometheus" 30 || true
+}
+
+launch_grafana() {
+    step "Pulling Grafana..."
+    docker pull "${IMG_GRAFANA}"
+
+    step "Launching Grafana..."
+    docker run -d \
+        --name "${C_GRAFANA}" \
+        --restart unless-stopped \
+        --network "${DOCKER_NETWORK}" \
+        -v "${GRAFANA_PROV}:/etc/grafana/provisioning:ro" \
+        -v "${GRAFANA_DASH}:/var/lib/grafana/dashboards:ro" \
+        -v NOSweb-grafana-data:/var/lib/grafana \
+        -e GF_AUTH_ANONYMOUS_ENABLED=true \
+        -e GF_AUTH_ANONYMOUS_ORG_ROLE=Admin \
+        -e GF_AUTH_DISABLE_LOGIN_FORM=true \
+        -e GF_USERS_ALLOW_SIGN_UP=false \
+        -e GF_SECURITY_ALLOW_EMBEDDING=true \
+        -e GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/dashboards/gpu-overview.json \
+        -e GF_USERS_DEFAULT_THEME=dark \
+        -e "GF_SERVER_ROOT_URL=http://localhost:${DEFAULT_PORT}/" \
+        "${IMG_GRAFANA}" \
+    && info "Grafana started." || { err "Grafana failed."; return 1; }
+
+    local ip; ip=$(container_ip "${C_GRAFANA}")
+    [ -n "$ip" ] && wait_for_http "http://${ip}:${PORT_GRAFANA}/api/health" "Grafana" 30 || true
+}
+
+launch_proxy() {
+    step "Pulling Nginx..."
+    docker pull "${IMG_NGINX}"
+
+    step "Launching proxy on port ${DEFAULT_PORT}..."
+    local -a cmd=(
+        docker run -d
+        --name "${C_PROXY}"
+        --restart unless-stopped
+        --network "${DOCKER_NETWORK}"
+        -p "${DEFAULT_PORT}:80"
+        -v "${NGINX_CONF}:/etc/nginx/nginx.conf:ro"
+    )
+
+    [ "${NOLOGIN}" = false ] && [ -f "${HTPASSWD_FILE}" ] && \
+        cmd+=(-v "${HTPASSWD_FILE}:/etc/nginx/.htpasswd:ro")
+
+    cmd+=("${IMG_NGINX}")
+    "${cmd[@]}" && info "Proxy started." || { err "Proxy failed."; return 1; }
+
+    sleep 2
+    if [ "${NOLOGIN}" = false ]; then
+        local code
+        code=$(curl -sf -o /dev/null -w "%{http_code}" "http://127.0.0.1:${DEFAULT_PORT}/" 2>/dev/null || echo "000")
+        [ "${code}" = "401" ] && info "Auth working — browser will prompt for login." || \
+            info "Proxy responding (HTTP ${code})."
+    else
+        wait_for_http "http://127.0.0.1:${DEFAULT_PORT}/" "Proxy" 10 || true
+    fi
+}
+
+# -----------------------------------------------------------------------------
 # Stop / Status
 # -----------------------------------------------------------------------------
 do_stop() {
-    step "Stopping Nosana WebUI containers..."
-    for c in "${PROXY_CONTAINER}" "${NETDATA_CONTAINER}" "nosana-webui"; do
+    step "Stopping NOSweb..."
+    for c in "${C_PROXY}" "${C_GRAFANA}" "${C_PROMETHEUS}" "${C_DCGM}" "${C_NETDATA}" ${LEGACY_CONTAINERS}; do
         if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${c}$"; then
             docker stop "${c}" 2>/dev/null || true
             docker rm "${c}" 2>/dev/null || true
@@ -272,194 +846,39 @@ do_stop() {
 }
 
 do_status() {
-    echo -e "${BOLD}Nosana WebUI Status${NC}"
+    echo ""
+    echo -e "${BOLD}NOSweb Status${NC}"
     echo "──────────────────────────────────────"
     if docker info &>/dev/null 2>&1; then
-        echo -e "  Docker:    ${G}running${NC}"
+        echo -e "  Docker:      ${G}running${NC}"
     else
-        echo -e "  Docker:    ${R}not running${NC}"
+        echo -e "  Docker:      ${R}not running${NC}"
     fi
     if check_gpu; then
-        local gpu_name
-        gpu_name=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)
-        echo -e "  GPU:       ${G}${gpu_name}${NC}"
+        echo -e "  GPU:         ${G}$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)${NC}"
     else
-        echo -e "  GPU:       ${Y}not detected${NC}"
+        echo -e "  GPU:         ${Y}not detected${NC}"
     fi
-    for c in "${NETDATA_CONTAINER}" "${PROXY_CONTAINER}"; do
-        local label="${c#nosana-}"
+    [ -f "${GROUP_FILE}" ] && echo -e "  Group:       $(cat "${GROUP_FILE}")"
+    echo ""
+    for c in "${C_NETDATA}" "${C_DCGM}" "${C_PROMETHEUS}" "${C_GRAFANA}" "${C_PROXY}"; do
+        local short="${c#NOSweb-}"
+        local pad=$(( 14 - ${#short} ))
         if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${c}$"; then
-            echo -e "  ${label}:  ${G}running${NC}"
+            echo -e "  ${short}:$(printf '%*s' $pad '') ${G}running${NC}"
         elif docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${c}$"; then
-            echo -e "  ${label}:  ${Y}stopped${NC}"
+            echo -e "  ${short}:$(printf '%*s' $pad '') ${Y}stopped${NC}"
         else
-            echo -e "  ${label}:  not deployed"
+            echo -e "  ${short}:$(printf '%*s' $pad '') ${R}not deployed${NC}"
         fi
     done
-    local ip
-    ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+    local ip; ip=$(get_ip)
     echo ""
-    echo -e "  URL:       http://${ip:-localhost}:${DEFAULT_PORT}"
-    echo -e "  Config:    ${CONFIG_DIR}"
+    echo -e "  Grafana:     ${C_CLR}http://${ip:-localhost}:${DEFAULT_PORT}/${NC}"
+    echo -e "  Netdata:     ${C_CLR}http://${ip:-localhost}:${DEFAULT_PORT}/netdata/${NC}"
+    echo -e "  Prometheus:  ${C_CLR}http://${ip:-localhost}:${DEFAULT_PORT}/prometheus/${NC}"
+    echo -e "  Config:      ${CONFIG_DIR}"
     echo ""
-}
-
-# -----------------------------------------------------------------------------
-# Launch Netdata
-# -----------------------------------------------------------------------------
-launch_netdata() {
-    local port_mapping="$1"
-
-    step "Pulling latest Netdata image..."
-    docker pull "${NETDATA_IMAGE}"
-
-    step "Launching Netdata..."
-
-    local -a cmd=(
-        docker run -d
-        --name "${NETDATA_CONTAINER}"
-        --hostname "nosana-$(hostname)"
-        --restart unless-stopped
-        --pid=host
-        --cap-add SYS_PTRACE
-        --cap-add SYS_ADMIN
-        --security-opt apparmor=unconfined
-
-        # Port mapping controls access (Docker-enforced, not config-dependent)
-        -p "${port_mapping}"
-
-        # Host filesystem (read-only) for real host monitoring
-        -v /proc:/host/proc:ro
-        -v /sys:/host/sys:ro
-        -v /etc/os-release:/host/etc/os-release:ro
-        -v /etc/passwd:/host/etc/passwd:ro
-        -v /etc/group:/host/etc/group:ro
-        -v /var/log:/host/var/log:ro
-        -v /etc/localtime:/etc/localtime:ro
-
-        # Docker socket — see other containers
-        -v /var/run/docker.sock:/var/run/docker.sock:ro
-
-        # Persistent storage
-        -v netdata-lib:/var/lib/netdata
-        -v netdata-cache:/var/cache/netdata
-
-        # Nosana WebUI shared config
-        -v "${CONFIG_DIR}:/nosana-webui:rw"
-    )
-
-    # GPU support
-    if check_nvidia_runtime; then
-        info "NVIDIA runtime detected — enabling --gpus all"
-        cmd+=(--gpus all)
-    elif check_gpu; then
-        warn "GPU found but nvidia-container-toolkit missing — direct device mount."
-        for dev in /dev/nvidia0 /dev/nvidiactl /dev/nvidia-uvm /dev/nvidia-uvm-tools; do
-            [ -e "$dev" ] && cmd+=(--device "${dev}:${dev}")
-        done
-        local smi_path
-        smi_path=$(command -v nvidia-smi 2>/dev/null || true)
-        if [ -n "$smi_path" ]; then
-            cmd+=(-v "${smi_path}:${smi_path}:ro")
-        fi
-    else
-        warn "No NVIDIA GPU detected."
-    fi
-
-    cmd+=("${NETDATA_IMAGE}")
-
-    if "${cmd[@]}"; then
-        info "Netdata container started."
-    else
-        err "Netdata failed. Check: docker logs ${NETDATA_CONTAINER}"
-        exit 1
-    fi
-
-    # Wait for Netdata to be ready
-    step "Waiting for Netdata to initialize..."
-    local check_port
-    if [[ "${port_mapping}" == 127.0.0.1:* ]]; then
-        check_port="${NETDATA_INTERNAL_PORT}"
-    else
-        check_port="${DEFAULT_PORT}"
-    fi
-
-    local retries=20
-    while [ $retries -gt 0 ]; do
-        if curl -sf "http://127.0.0.1:${check_port}/api/v1/info" >/dev/null 2>&1; then
-            info "Netdata responding on port ${check_port}"
-            return 0
-        fi
-        retries=$((retries - 1))
-        sleep 2
-    done
-
-    warn "Netdata not responding after 40s."
-    local status
-    status=$(docker inspect -f '{{.State.Status}}' "${NETDATA_CONTAINER}" 2>/dev/null || echo "unknown")
-    echo "  Container status: ${status}"
-    if [ "${status}" = "running" ]; then
-        echo "  Last 10 log lines:"
-        docker logs --tail 10 "${NETDATA_CONTAINER}" 2>&1 | sed 's/^/    /'
-    fi
-    echo ""
-    warn "Continuing — Netdata may need more time on first start."
-}
-
-# -----------------------------------------------------------------------------
-# Launch nginx auth proxy
-# -----------------------------------------------------------------------------
-launch_proxy() {
-    step "Pulling nginx image..."
-    docker pull "${NGINX_IMAGE}"
-
-    step "Launching auth proxy on port ${DEFAULT_PORT}..."
-
-    # Nginx uses --network=host so it can reach Netdata on 127.0.0.1
-    local -a cmd=(
-        docker run -d
-        --name "${PROXY_CONTAINER}"
-        --restart unless-stopped
-        --network=host
-        -v "${NGINX_CONF}:/etc/nginx/nginx.conf:ro"
-        -v "${HTPASSWD_FILE}:/etc/nginx/.htpasswd:ro"
-    )
-
-    cmd+=("${NGINX_IMAGE}")
-
-    if "${cmd[@]}"; then
-        info "Proxy started."
-    else
-        err "Proxy failed. Check: docker logs ${PROXY_CONTAINER}"
-        exit 1
-    fi
-
-    # Verify
-    step "Verifying auth proxy..."
-    sleep 2
-    local retries=10
-    while [ $retries -gt 0 ]; do
-        local code
-        code=$(curl -sf -o /dev/null -w "%{http_code}" "http://127.0.0.1:${DEFAULT_PORT}/" 2>/dev/null || echo "000")
-        if [ "${code}" = "401" ]; then
-            info "Auth working — browser will prompt for username/password."
-            return 0
-        elif [ "${code}" = "200" ] || [ "${code}" = "302" ]; then
-            # This shouldn't happen in secure mode, but Netdata may redirect
-            info "Proxy responding (HTTP ${code})."
-            return 0
-        fi
-        retries=$((retries - 1))
-        sleep 1
-    done
-
-    # Even if verification times out, check if nginx is actually running
-    if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${PROXY_CONTAINER}$"; then
-        info "Proxy container is running. It may need a moment to fully start."
-        echo "  Check manually: curl -I http://127.0.0.1:${DEFAULT_PORT}/"
-    else
-        warn "Proxy container is not running. Check: docker logs ${PROXY_CONTAINER}"
-    fi
 }
 
 # -----------------------------------------------------------------------------
@@ -468,23 +887,24 @@ launch_proxy() {
 main() {
     local port="${DEFAULT_PORT}"
     local action="launch"
-    local nologin=false
+    local group_arg=""
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --port)            port="$2"; DEFAULT_PORT="$2"; shift 2 ;;
-            --nologin)         nologin=true; shift ;;
+            --nologin)         NOLOGIN=true; shift ;;
+            --group)           group_arg="$2"; shift 2 ;;
             --stop)            action="stop"; shift ;;
             --status)          action="status"; shift ;;
             --reset-password)  action="reset-pw"; shift ;;
             --help|-h)
                 echo "Usage: $0 [OPTIONS]"
-                echo ""
-                echo "  --nologin          No login required (open access)"
+                echo "  --group NAME       Group name (default: Unassigned)"
+                echo "  --nologin          No login required"
                 echo "  --port PORT        Public port (default: ${DEFAULT_PORT})"
-                echo "  --stop             Stop and remove containers"
+                echo "  --stop             Stop all containers"
                 echo "  --status           Show status"
-                echo "  --reset-password   Change stored password"
+                echo "  --reset-password   Change password"
                 exit 0
                 ;;
             *) err "Unknown option: $1"; exit 1 ;;
@@ -498,83 +918,73 @@ main() {
             setup_config
             rm -f "${HTPASSWD_FILE}" "${PASSWORD_FILE}" "${AUTH_VERSION_FILE}"
             create_password
-            if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${PROXY_CONTAINER}$"; then
-                docker restart "${PROXY_CONTAINER}" >/dev/null
-                info "Proxy restarted with new credentials."
-            fi
+            docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${C_PROXY}$" && \
+                docker restart "${C_PROXY}" >/dev/null && info "Proxy restarted."
             exit 0
             ;;
     esac
 
     # ── Launch ──
     echo ""
-    echo -e "${BOLD}${B}  Nosana WebUI — Netdata Launcher${NC}"
+    echo -e "${BOLD}${B}  NOSweb — GPU Host Monitoring Stack${NC}"
     echo ""
 
     check_docker
     setup_config
-    cleanup_stale
+    setup_group "${group_arg}"
+    cleanup_containers
+    cleanup_legacy_volumes
+    ensure_network
 
-    if [ "${nologin}" = true ]; then
-        # ══════════════════════════════════════
-        # NOLOGIN MODE — Netdata open on network
-        # ══════════════════════════════════════
-        info "Mode: anonymous (no login required)"
-        echo ""
-
-        # Netdata directly on all interfaces, no proxy
-        launch_netdata "0.0.0.0:${port}:19999"
+    if [ "${NOLOGIN}" = true ]; then
+        info "Mode: anonymous (no login)"
     else
-        # ══════════════════════════════════════
-        # SECURE MODE — Netdata behind auth proxy
-        # ══════════════════════════════════════
         info "Mode: login required"
-
         setup_password
-
-        # Netdata on localhost only (Docker port mapping enforces this)
-        launch_netdata "127.0.0.1:${NETDATA_INTERNAL_PORT}:19999"
-
-        # Nginx with basic auth, using Netdata's official proxy config
-        generate_nginx_conf
-        launch_proxy
-
-        # Firewall
-        open_firewall "${port}"
     fi
+
+    echo ""
+    generate_prometheus_config
+    generate_grafana_provisioning
+    generate_dashboards
+    generate_nginx_conf
+    echo ""
+
+    launch_netdata;   echo ""
+    launch_dcgm;      echo ""
+    launch_prometheus; echo ""
+    launch_grafana;    echo ""
+    launch_proxy
+
+    open_firewall "${port}"
 
     # ── Summary ──
-    local ip
-    ip=$(hostname -I 2>/dev/null | awk '{print $1}')
-
+    local ip; ip=$(get_ip)
     echo ""
     echo -e "${BOLD}════════════════════════════════════════════════════════${NC}"
-    echo -e "  ${G}${BOLD}Nosana WebUI is running!${NC}"
+    echo -e "  ${G}${BOLD}NOSweb is running!${NC}"
     echo ""
-    echo -e "  ${BOLD}Local:${NC}    ${C}http://localhost:${port}${NC}"
-    if [ -n "${ip:-}" ]; then
-        echo -e "  ${BOLD}Network:${NC}  ${C}http://${ip}:${port}${NC}"
-    fi
+    echo -e "  ${BOLD}Grafana:${NC}     ${C_CLR}http://${ip:-localhost}:${port}/${NC}"
+    echo -e "  ${BOLD}Netdata:${NC}     ${C_CLR}http://${ip:-localhost}:${port}/netdata/${NC}"
+    echo -e "  ${BOLD}Prometheus:${NC}  ${C_CLR}http://${ip:-localhost}:${port}/prometheus/${NC}"
     echo ""
-
-    if [ "${nologin}" = true ]; then
-        echo -e "  ${BOLD}Mode:${NC}     Anonymous (open access)"
+    if [ "${NOLOGIN}" = true ]; then
+        echo -e "  ${BOLD}Mode:${NC}        Anonymous (open access)"
     else
         local cred_user
-        cred_user=$(head -1 "${HTPASSWD_FILE}" | cut -d: -f1)
-        echo -e "  ${BOLD}Mode:${NC}     Login required"
-        echo -e "  ${BOLD}User:${NC}     ${G}${cred_user}${NC}"
-        echo -e "  ${BOLD}Pass:${NC}     (your password — stored in ${PASSWORD_FILE})"
+        cred_user=$(head -1 "${HTPASSWD_FILE}" 2>/dev/null | cut -d: -f1)
+        echo -e "  ${BOLD}Mode:${NC}        Login required"
+        echo -e "  ${BOLD}User:${NC}        ${G}${cred_user}${NC}"
+        echo -e "  ${BOLD}Pass:${NC}        (stored in ${PASSWORD_FILE})"
     fi
-
     echo ""
-    echo -e "  ${BOLD}Config:${NC}   ${CONFIG_DIR}/"
-    echo -e "  ${BOLD}Stop:${NC}     $0 --stop"
-    echo -e "  ${BOLD}Status:${NC}   $0 --status"
-    echo -e "  ${BOLD}Update:${NC}   Re-run this script (pulls latest images)"
+    echo -e "  ${BOLD}Group:${NC}       $(cat "${GROUP_FILE}" 2>/dev/null || echo "${DEFAULT_GROUP}")"
+    echo -e "  ${BOLD}Config:${NC}      ${CONFIG_DIR}/"
+    echo -e "  ${BOLD}Stop:${NC}        $0 --stop"
+    echo -e "  ${BOLD}Status:${NC}      $0 --status"
     echo ""
-    echo -e "  ${Y}Note:${NC} Clear your browser cache or use private browsing"
-    echo -e "  if you see stale errors from previous attempts."
+    echo -e "  ${Y}Tip:${NC} GPU Overview is the home dashboard."
+    echo -e "  Host Overview is available in the dashboard menu."
     echo -e "${BOLD}════════════════════════════════════════════════════════${NC}"
     echo ""
 }
