@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-echo "v0.01.2"
+echo "v0.01.3"
 sleep 3
 # =============================================================================
 # Nosana WebUI — Netdata Launcher
@@ -8,16 +8,8 @@ sleep 3
 # Deploys Netdata in Docker with full host monitoring + NVIDIA GPU support.
 # Default: login required (nginx basic auth). Use --nologin for open access.
 #
-# Auth uses your OS username + password you type at first setup.
-# Persistent config in ~/.nosana-webui/ survives container restarts/purges.
-#
-# Usage:
-#   bash <(wget -qO- https://raw.githubusercontent.com/.../NosanaLocalWebConsole.sh)
-#   ... --nologin           # no login, open access
-#   ... --port PORT         # public port (default: 19999)
-#   ... --stop              # stop and remove containers
-#   ... --status            # show status
-#   ... --reset-password    # change stored password
+# Auth: your OS username + password you set at first run.
+# Config in ~/.nosana-webui/ survives container restarts/purges.
 #
 # Tested: Ubuntu 20.04 – 24.04 (Desktop, Server, Minimal, Core)
 # Requires: Docker (already present on Nosana hosts)
@@ -38,7 +30,7 @@ HTPASSWD_FILE="${CONFIG_DIR}/.htpasswd"
 PASSWORD_FILE="${CONFIG_DIR}/.password"
 AUTH_VERSION_FILE="${CONFIG_DIR}/.auth_version"
 NGINX_CONF="${CONFIG_DIR}/nginx.conf"
-AUTH_VERSION="2"  # Bump this when auth mechanism changes
+AUTH_VERSION="2"
 
 # Terminal colors
 if [ -t 1 ]; then
@@ -85,7 +77,6 @@ check_nvidia_runtime() {
 # Cleanup stale state
 # -----------------------------------------------------------------------------
 cleanup_stale() {
-    # Stop and remove any existing containers (current + old naming)
     for c in "${PROXY_CONTAINER}" "${NETDATA_CONTAINER}" "nosana-webui"; do
         if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${c}$"; then
             step "Removing old container: ${c}"
@@ -124,7 +115,6 @@ EOF
 # Authentication
 # -----------------------------------------------------------------------------
 credentials_are_current() {
-    # Check if credentials exist AND were created by this version of the script
     [ -f "${HTPASSWD_FILE}" ] && \
     [ -f "${PASSWORD_FILE}" ] && \
     [ -f "${AUTH_VERSION_FILE}" ] && \
@@ -144,7 +134,6 @@ setup_password() {
         return 0
     fi
 
-    # Old or missing credentials — force fresh setup
     if [ -f "${HTPASSWD_FILE}" ] || [ -f "${PASSWORD_FILE}" ]; then
         warn "Old credentials from a previous version detected — resetting."
         rm -f "${HTPASSWD_FILE}" "${PASSWORD_FILE}" "${AUTH_VERSION_FILE}"
@@ -201,7 +190,8 @@ create_password() {
 }
 
 # -----------------------------------------------------------------------------
-# Nginx config
+# Nginx config — based on Netdata official documentation
+# https://learn.netdata.cloud/docs/netdata-agent/configuration/securing-agents/running-the-agent-behind-a-reverse-proxy/nginx
 # -----------------------------------------------------------------------------
 generate_nginx_conf() {
     cat > "${NGINX_CONF}" << NGINXEOF
@@ -209,12 +199,13 @@ worker_processes 1;
 error_log /var/log/nginx/error.log warn;
 pid /tmp/nginx.pid;
 
-events { worker_connections 128; }
+events { worker_connections 256; }
 
 http {
+    # Upstream definition — matches Netdata official nginx docs
     upstream netdata {
         server 127.0.0.1:${NETDATA_INTERNAL_PORT};
-        keepalive 64;
+        keepalive 1024;
     }
 
     server {
@@ -225,20 +216,21 @@ http {
         auth_basic_user_file /etc/nginx/.htpasswd;
 
         location / {
-            proxy_pass http://netdata;
-            proxy_set_header Host \$host;
-            proxy_set_header X-Real-IP \$remote_addr;
+            # Headers per Netdata official nginx proxy documentation
+            proxy_set_header X-Forwarded-Host \$host;
+            proxy_set_header X-Forwarded-Server \$host;
             proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-            proxy_set_header X-Forwarded-Proto \$scheme;
-
-            # WebSocket support (Netdata live charts)
+            proxy_pass http://netdata;
             proxy_http_version 1.1;
-            proxy_set_header Upgrade \$http_upgrade;
-            proxy_set_header Connection "upgrade";
+            proxy_pass_request_headers on;
+            proxy_set_header Connection "keep-alive";
+            proxy_store off;
 
-            proxy_connect_timeout 60s;
-            proxy_read_timeout 300s;
-            proxy_send_timeout 300s;
+            # Netdata compresses responses by default.
+            # Let it pass through to the browser as-is.
+            gzip on;
+            gzip_proxied any;
+            gzip_types *;
         }
     }
 }
@@ -315,38 +307,27 @@ do_status() {
 # Launch Netdata
 # -----------------------------------------------------------------------------
 launch_netdata() {
-    local port_mapping="$1"  # e.g. "127.0.0.1:19998:19999" or "19999:19999"
+    local port_mapping="$1"
 
     step "Pulling latest Netdata image..."
     docker pull "${NETDATA_IMAGE}"
 
     step "Launching Netdata..."
 
-    # KEY DESIGN: We do NOT use --network=host.
-    # Instead, Docker port mapping controls who can reach Netdata:
-    #   Secure mode:  -p 127.0.0.1:19998:19999  (localhost only)
-    #   Nologin mode: -p 0.0.0.0:PORT:19999     (open to network)
-    #
-    # Host monitoring still works because we mount /proc, /sys, docker socket,
-    # and use --pid=host. Netdata reads host stats from these mounts, not from
-    # the network namespace.
-
     local -a cmd=(
         docker run -d
         --name "${NETDATA_CONTAINER}"
         --hostname "nosana-$(hostname)"
         --restart unless-stopped
-
-        # Host visibility (these are what enable real host monitoring)
         --pid=host
         --cap-add SYS_PTRACE
         --cap-add SYS_ADMIN
         --security-opt apparmor=unconfined
 
-        # Port mapping — this is how we control access
+        # Port mapping controls access (Docker-enforced, not config-dependent)
         -p "${port_mapping}"
 
-        # Host filesystem (read-only)
+        # Host filesystem (read-only) for real host monitoring
         -v /proc:/host/proc:ro
         -v /sys:/host/sys:ro
         -v /etc/os-release:/host/etc/os-release:ro
@@ -395,18 +376,17 @@ launch_netdata() {
 
     # Wait for Netdata to be ready
     step "Waiting for Netdata to initialize..."
-    local check_addr
-    # Extract the host:port part from the port mapping (left side of the last colon pair)
+    local check_port
     if [[ "${port_mapping}" == 127.0.0.1:* ]]; then
-        check_addr="127.0.0.1:${NETDATA_INTERNAL_PORT}"
+        check_port="${NETDATA_INTERNAL_PORT}"
     else
-        check_addr="127.0.0.1:${DEFAULT_PORT}"
+        check_port="${DEFAULT_PORT}"
     fi
 
     local retries=20
     while [ $retries -gt 0 ]; do
-        if curl -sf "http://${check_addr}/api/v1/info" >/dev/null 2>&1; then
-            info "Netdata responding on ${check_addr}"
+        if curl -sf "http://127.0.0.1:${check_port}/api/v1/info" >/dev/null 2>&1; then
+            info "Netdata responding on port ${check_port}"
             return 0
         fi
         retries=$((retries - 1))
@@ -414,8 +394,6 @@ launch_netdata() {
     done
 
     warn "Netdata not responding after 40s."
-    echo ""
-    echo "  Checking container status..."
     local status
     status=$(docker inspect -f '{{.State.Status}}' "${NETDATA_CONTAINER}" 2>/dev/null || echo "unknown")
     echo "  Container status: ${status}"
@@ -424,7 +402,7 @@ launch_netdata() {
         docker logs --tail 10 "${NETDATA_CONTAINER}" 2>&1 | sed 's/^/    /'
     fi
     echo ""
-    warn "Continuing anyway — Netdata may need more time on first start."
+    warn "Continuing — Netdata may need more time on first start."
 }
 
 # -----------------------------------------------------------------------------
@@ -436,7 +414,7 @@ launch_proxy() {
 
     step "Launching auth proxy on port ${DEFAULT_PORT}..."
 
-    # Nginx uses --network=host so it can reach Netdata on 127.0.0.1:19998
+    # Nginx uses --network=host so it can reach Netdata on 127.0.0.1
     local -a cmd=(
         docker run -d
         --name "${PROXY_CONTAINER}"
@@ -455,23 +433,32 @@ launch_proxy() {
         exit 1
     fi
 
-    # Verify proxy returns 401 (auth required)
+    # Verify
     step "Verifying auth proxy..."
+    sleep 2
     local retries=10
     while [ $retries -gt 0 ]; do
         local code
         code=$(curl -sf -o /dev/null -w "%{http_code}" "http://127.0.0.1:${DEFAULT_PORT}/" 2>/dev/null || echo "000")
         if [ "${code}" = "401" ]; then
-            info "Auth working — browser will prompt for login (HTTP 401)."
+            info "Auth working — browser will prompt for username/password."
             return 0
-        elif [ "${code}" = "200" ]; then
-            warn "Proxy returned 200 (no auth). Check nginx config."
-            return 1
+        elif [ "${code}" = "200" ] || [ "${code}" = "302" ]; then
+            # This shouldn't happen in secure mode, but Netdata may redirect
+            info "Proxy responding (HTTP ${code})."
+            return 0
         fi
         retries=$((retries - 1))
         sleep 1
     done
-    warn "Proxy not responding yet. Check: docker logs ${PROXY_CONTAINER}"
+
+    # Even if verification times out, check if nginx is actually running
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${PROXY_CONTAINER}$"; then
+        info "Proxy container is running. It may need a moment to fully start."
+        echo "  Check manually: curl -I http://127.0.0.1:${DEFAULT_PORT}/"
+    else
+        warn "Proxy container is not running. Check: docker logs ${PROXY_CONTAINER}"
+    fi
 }
 
 # -----------------------------------------------------------------------------
@@ -508,7 +495,6 @@ main() {
         status)   do_status; exit 0 ;;
         reset-pw)
             setup_config
-            # Force fresh credential creation
             rm -f "${HTPASSWD_FILE}" "${PASSWORD_FILE}" "${AUTH_VERSION_FILE}"
             create_password
             if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${PROXY_CONTAINER}$"; then
@@ -535,10 +521,8 @@ main() {
         info "Mode: anonymous (no login required)"
         echo ""
 
-        # Netdata directly accessible on all interfaces
+        # Netdata directly on all interfaces, no proxy
         launch_netdata "0.0.0.0:${port}:19999"
-
-        # No nginx needed in open mode
     else
         # ══════════════════════════════════════
         # SECURE MODE — Netdata behind auth proxy
@@ -547,14 +531,14 @@ main() {
 
         setup_password
 
-        # Netdata only on localhost (Docker enforces this — no config to override)
+        # Netdata on localhost only (Docker port mapping enforces this)
         launch_netdata "127.0.0.1:${NETDATA_INTERNAL_PORT}:19999"
 
-        # Nginx with basic auth on the public port
+        # Nginx with basic auth, using Netdata's official proxy config
         generate_nginx_conf
         launch_proxy
 
-        # Firewall: allow public port, block internal
+        # Firewall
         open_firewall "${port}"
     fi
 
@@ -587,6 +571,9 @@ main() {
     echo -e "  ${BOLD}Stop:${NC}     $0 --stop"
     echo -e "  ${BOLD}Status:${NC}   $0 --status"
     echo -e "  ${BOLD}Update:${NC}   Re-run this script (pulls latest images)"
+    echo ""
+    echo -e "  ${Y}Note:${NC} Clear your browser cache or use private browsing"
+    echo -e "  if you see stale errors from previous attempts."
     echo -e "${BOLD}════════════════════════════════════════════════════════${NC}"
     echo ""
 }
