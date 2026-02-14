@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-echo "v0.01.6"
+echo "v0.01.7"
 sleep 3
 # =============================================================================
 # NOSweb — GPU Host Monitoring Stack
@@ -369,7 +369,7 @@ generate_gpu_dashboard() {
       "id": 1, "type": "gauge", "title": "GPU Utilization",
       "gridPos": {"h": 6, "w": 6, "x": 0, "y": 0},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "targets": [{"refId": "A", "expr": "DCGM_FI_DEV_GPU_UTIL", "legendFormat": "GPU {{gpu}}"}],
+      "targets": [{"refId": "A", "expr": "max by (gpu)(DCGM_FI_DEV_GPU_UTIL)", "legendFormat": "GPU {{gpu}}"}],
       "fieldConfig": {"defaults": {"unit": "percent", "min": 0, "max": 100,
         "thresholds": {"mode": "absolute", "steps": [
           {"value": null, "color": "green"}, {"value": 70, "color": "yellow"}, {"value": 90, "color": "red"}
@@ -379,7 +379,7 @@ generate_gpu_dashboard() {
       "id": 2, "type": "gauge", "title": "Memory Used",
       "gridPos": {"h": 6, "w": 6, "x": 6, "y": 0},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "targets": [{"refId": "A", "expr": "DCGM_FI_DEV_FB_USED / (DCGM_FI_DEV_FB_USED + DCGM_FI_DEV_FB_FREE) * 100", "legendFormat": "GPU {{gpu}}"}],
+      "targets": [{"refId": "A", "expr": "max by (gpu)(DCGM_FI_DEV_FB_USED) / (max by (gpu)(DCGM_FI_DEV_FB_USED) + max by (gpu)(DCGM_FI_DEV_FB_FREE)) * 100", "legendFormat": "GPU {{gpu}}"}],
       "fieldConfig": {"defaults": {"unit": "percent", "min": 0, "max": 100,
         "thresholds": {"mode": "absolute", "steps": [
           {"value": null, "color": "green"}, {"value": 70, "color": "yellow"}, {"value": 90, "color": "red"}
@@ -389,7 +389,7 @@ generate_gpu_dashboard() {
       "id": 3, "type": "gauge", "title": "Temperature",
       "gridPos": {"h": 6, "w": 6, "x": 12, "y": 0},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "targets": [{"refId": "A", "expr": "DCGM_FI_DEV_GPU_TEMP", "legendFormat": "GPU {{gpu}}"}],
+      "targets": [{"refId": "A", "expr": "max by (gpu)(DCGM_FI_DEV_GPU_TEMP)", "legendFormat": "GPU {{gpu}}"}],
       "fieldConfig": {"defaults": {"unit": "celsius", "min": 0, "max": 100,
         "thresholds": {"mode": "absolute", "steps": [
           {"value": null, "color": "green"}, {"value": 70, "color": "yellow"}, {"value": 85, "color": "red"}
@@ -399,7 +399,7 @@ generate_gpu_dashboard() {
       "id": 4, "type": "gauge", "title": "Power Draw",
       "gridPos": {"h": 6, "w": 6, "x": 18, "y": 0},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "targets": [{"refId": "A", "expr": "DCGM_FI_DEV_POWER_USAGE", "legendFormat": "GPU {{gpu}}"}],
+      "targets": [{"refId": "A", "expr": "max by (gpu)(DCGM_FI_DEV_POWER_USAGE)", "legendFormat": "GPU {{gpu}}"}],
       "fieldConfig": {"defaults": {"unit": "watt", "min": 0,
         "thresholds": {"mode": "absolute", "steps": [
           {"value": null, "color": "green"}, {"value": 200, "color": "yellow"}, {"value": 300, "color": "red"}
@@ -409,7 +409,7 @@ generate_gpu_dashboard() {
       "id": 5, "type": "timeseries", "title": "GPU Utilization Over Time",
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 6},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "targets": [{"refId": "A", "expr": "DCGM_FI_DEV_GPU_UTIL", "legendFormat": "GPU {{gpu}}"}],
+      "targets": [{"refId": "A", "expr": "max by (gpu)(DCGM_FI_DEV_GPU_UTIL)", "legendFormat": "GPU {{gpu}}"}],
       "fieldConfig": {"defaults": {"unit": "percent", "max": 100, "color": {"mode": "palette-classic"},
         "custom": {"lineWidth": 2, "fillOpacity": 15, "spanNulls": true}}}
     },
@@ -418,8 +418,8 @@ generate_gpu_dashboard() {
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 6},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
-        {"refId": "A", "expr": "DCGM_FI_DEV_FB_USED", "legendFormat": "GPU {{gpu}} Used"},
-        {"refId": "B", "expr": "DCGM_FI_DEV_FB_FREE", "legendFormat": "GPU {{gpu}} Free"}
+        {"refId": "A", "expr": "max by (gpu)(DCGM_FI_DEV_FB_USED)", "legendFormat": "GPU {{gpu}} Used"},
+        {"refId": "B", "expr": "max by (gpu)(DCGM_FI_DEV_FB_FREE)", "legendFormat": "GPU {{gpu}} Free"}
       ],
       "fieldConfig": {"defaults": {"unit": "decmbytes", "color": {"mode": "palette-classic"},
         "custom": {"lineWidth": 2, "fillOpacity": 15, "spanNulls": true}}}
@@ -428,7 +428,7 @@ generate_gpu_dashboard() {
       "id": 7, "type": "timeseries", "title": "Temperature Over Time",
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 14},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "targets": [{"refId": "A", "expr": "DCGM_FI_DEV_GPU_TEMP", "legendFormat": "GPU {{gpu}}"}],
+      "targets": [{"refId": "A", "expr": "max by (gpu)(DCGM_FI_DEV_GPU_TEMP)", "legendFormat": "GPU {{gpu}}"}],
       "fieldConfig": {"defaults": {"unit": "celsius", "color": {"mode": "palette-classic"},
         "custom": {"lineWidth": 2, "fillOpacity": 10, "spanNulls": true,
           "thresholdsStyle": {"mode": "line"}},
@@ -440,7 +440,7 @@ generate_gpu_dashboard() {
       "id": 8, "type": "timeseries", "title": "Power Draw Over Time",
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 14},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "targets": [{"refId": "A", "expr": "DCGM_FI_DEV_POWER_USAGE", "legendFormat": "GPU {{gpu}}"}],
+      "targets": [{"refId": "A", "expr": "max by (gpu)(DCGM_FI_DEV_POWER_USAGE)", "legendFormat": "GPU {{gpu}}"}],
       "fieldConfig": {"defaults": {"unit": "watt", "color": {"mode": "palette-classic"},
         "custom": {"lineWidth": 2, "fillOpacity": 15, "spanNulls": true}}}
     },
@@ -449,8 +449,8 @@ generate_gpu_dashboard() {
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 22},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
-        {"refId": "A", "expr": "DCGM_FI_DEV_SM_CLOCK", "legendFormat": "GPU {{gpu}} SM (MHz)"},
-        {"refId": "B", "expr": "DCGM_FI_DEV_MEM_CLOCK", "legendFormat": "GPU {{gpu}} Mem (MHz)"}
+        {"refId": "A", "expr": "max by (gpu)(DCGM_FI_DEV_SM_CLOCK)", "legendFormat": "GPU {{gpu}} SM (MHz)"},
+        {"refId": "B", "expr": "max by (gpu)(DCGM_FI_DEV_MEM_CLOCK)", "legendFormat": "GPU {{gpu}} Mem (MHz)"}
       ],
       "fieldConfig": {"defaults": {"unit": "rotmhz", "color": {"mode": "palette-classic"},
         "custom": {"lineWidth": 2, "fillOpacity": 10, "spanNulls": true}}}
@@ -460,8 +460,8 @@ generate_gpu_dashboard() {
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 22},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
-        {"refId": "A", "expr": "DCGM_FI_DEV_PCIE_TX_THROUGHPUT", "legendFormat": "GPU {{gpu}} TX"},
-        {"refId": "B", "expr": "DCGM_FI_DEV_PCIE_RX_THROUGHPUT", "legendFormat": "GPU {{gpu}} RX"}
+        {"refId": "A", "expr": "max by (gpu)(DCGM_FI_DEV_PCIE_TX_THROUGHPUT)", "legendFormat": "GPU {{gpu}} TX"},
+        {"refId": "B", "expr": "max by (gpu)(DCGM_FI_DEV_PCIE_RX_THROUGHPUT)", "legendFormat": "GPU {{gpu}} RX"}
       ],
       "fieldConfig": {"defaults": {"unit": "KBs", "color": {"mode": "palette-classic"},
         "custom": {"lineWidth": 2, "fillOpacity": 15, "spanNulls": true}}}
