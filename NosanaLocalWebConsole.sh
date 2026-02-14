@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-echo "v0.01.5"
+echo "v0.01.6"
 sleep 3
 # =============================================================================
 # NOSweb — GPU Host Monitoring Stack
@@ -791,10 +791,15 @@ launch_grafana() {
         -e GF_AUTH_ANONYMOUS_ENABLED=true \
         -e GF_AUTH_ANONYMOUS_ORG_ROLE=Admin \
         -e GF_AUTH_DISABLE_LOGIN_FORM=true \
+        -e GF_AUTH_BASIC_ENABLED=false \
+        -e GF_AUTH_DISABLE_SIGNOUT_MENU=true \
+        -e GF_AUTH_SIGV4_AUTH_ENABLED=false \
         -e GF_USERS_ALLOW_SIGN_UP=false \
         -e GF_SECURITY_ALLOW_EMBEDDING=true \
+        -e GF_SECURITY_DISABLE_GRAVATAR=true \
         -e GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/dashboards/gpu-overview.json \
         -e GF_USERS_DEFAULT_THEME=dark \
+        -e GF_HIDE_VERSION=true \
         -e "GF_SERVER_ROOT_URL=http://localhost:${DEFAULT_PORT}/" \
         "${IMG_GRAFANA}" \
     && info "Grafana started." || { err "Grafana failed."; return 1; }
