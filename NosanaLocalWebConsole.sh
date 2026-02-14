@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-echo "v0.00.08" # increment with each edit
+echo "v0.00.09" # increment with each edit
 sleep 3
 # =============================================================================
 # Nosana WebUI — Netdata Launcher
@@ -27,6 +27,7 @@ CONFIG_DIR="${HOME}/.nosana-webui"
 NETDATA_IMAGE="netdata/netdata:stable"
 DEFAULT_PORT=19999
 HTPASSWD_FILE="${CONFIG_DIR}/.htpasswd"
+PASSWORD_FILE="${CONFIG_DIR}/.password"
 
 # Terminal colors
 if [ -t 1 ]; then
@@ -115,23 +116,26 @@ setup_nologin() {
 # Secure mode (basic auth — nothing visible until you log in)
 # -----------------------------------------------------------------------------
 setup_secure() {
-    # Generate password only once
     if [ ! -f "${HTPASSWD_FILE}" ]; then
         local password
-        password=$(openssl rand -hex 16)
+        password=$(openssl rand -hex 12)
+        echo -n "${password}" > "${PASSWORD_FILE}"
         printf "nosana:$(openssl passwd -apr1 "${password}")\n" > "${HTPASSWD_FILE}"
-        echo ""
-        echo -e "${BOLD}Generated credentials (save these!):${NC}"
-        echo -e "   User: ${G}nosana${NC}"
-        echo -e "   Pass: ${G}${password}${NC}"
-        echo ""
     fi
+
+    local password
+    password=$(cat "${PASSWORD_FILE}")
+
+    echo ""
+    echo -e "${BOLD}Credentials (save these!):${NC}"
+    echo -e "   User: ${G}nosana${NC}"
+    echo -e "   Pass: ${G}${password}${NC}"
+    echo ""
 
     cat > "${CONFIG_DIR}/overrides/auth.conf" << EOF
 [web]
-    enable auth = yes
     auth mode = basic
-    auth file = /nosana-webui/.htpasswd
+    auth file = /etc/netdata/.htpasswd
 EOF
     info "Secure mode enabled (login required — user: nosana)"
 }
@@ -236,7 +240,7 @@ do_launch() {
         -v netdata-cache:/var/cache/netdata
         -v "${CONFIG_DIR}:/nosana-webui:rw"
         -v "${CONFIG_DIR}/overrides:/etc/netdata/netdata.conf.d:ro"
-        -v "${HTPASSWD_FILE}:/nosana-webui/.htpasswd:ro"
+        -v "${HTPASSWD_FILE}:/etc/netdata/.htpasswd:ro"
     )
 
     if check_nvidia_runtime; then
