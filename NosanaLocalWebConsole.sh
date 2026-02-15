@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-NOSWEB_VERSION="0.02.08"
+NOSWEB_VERSION="0.02.09"
 echo "v${NOSWEB_VERSION}"
 sleep 3
 # =============================================================================
@@ -116,6 +116,8 @@ SEED_PEERS_FILE="${CONFIG_DIR}/.seed_peers"
 FLEET_TARGETS="${PROM_TARGETS}/fleet.json"
 DISCOVERY_SCRIPT="${CONFIG_DIR}/discovery.sh"
 PROXY_ENTRYPOINT="${CONFIG_DIR}/proxy-entrypoint.sh"
+INFO_METRICS="${CONFIG_DIR}/info_metrics"
+WALLET_FILE="${CONFIG_DIR}/.wallet"
 
 AUTH_VERSION="2"
 DEFAULT_GROUP="Unassigned"
@@ -251,6 +253,55 @@ setup_peers() {
 }
 
 # -----------------------------------------------------------------------------
+# Wallet detection (public address only — private key never stored/logged)
+# -----------------------------------------------------------------------------
+detect_wallet() {
+    local wallet="" key_file="${HOME}/.nosana/nosana_key.json"
+
+    # Method 1: solana CLI (most standard, stable since 2020)
+    if command -v solana &>/dev/null && [ -f "${key_file}" ]; then
+        wallet=$(solana address -k "${key_file}" 2>/dev/null || true)
+    fi
+
+    # Method 2: Python3 base58 of public key bytes 32-63 (zero installs)
+    if [ -z "${wallet}" ] && [ -f "${key_file}" ] && command -v python3 &>/dev/null; then
+        wallet=$(python3 -c "
+import json,sys
+A='123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
+try:
+    kp=json.load(open('${key_file}'))
+    pk=bytes(kp[32:64])
+    n=int.from_bytes(pk,'big')
+    r=''
+    while n>0:n,m=divmod(n,58);r=A[m]+r
+    for b in pk:
+        if b==0:r='1'+r
+        else:break
+    print(r)
+except:sys.exit(1)
+" 2>/dev/null || true)
+    fi
+
+    echo "${wallet:-unknown}"
+}
+
+setup_wallet() {
+    local wallet
+    if [ -f "${WALLET_FILE}" ]; then
+        wallet=$(cat "${WALLET_FILE}")
+    else
+        wallet=$(detect_wallet)
+        echo -n "${wallet}" > "${WALLET_FILE}"
+    fi
+    if [ "${wallet}" != "unknown" ]; then
+        local short="${wallet:0:5}..."
+        info "Wallet: ${short} (${wallet})"
+    else
+        warn "Wallet: not detected (no Nosana key found)"
+    fi
+}
+
+# -----------------------------------------------------------------------------
 # Authentication
 # -----------------------------------------------------------------------------
 credentials_are_current() {
@@ -354,6 +405,26 @@ DCGMEOF
 }
 
 # -----------------------------------------------------------------------------
+# Generate host info metrics (static file served by nginx for Prometheus)
+# Exposes wallet address as a Prometheus label — no private key involved.
+# -----------------------------------------------------------------------------
+generate_info_metrics() {
+    local wallet
+    wallet=$(cat "${WALLET_FILE}" 2>/dev/null || echo "unknown")
+    local my_hostname
+    my_hostname=$(get_hostname)
+
+    cat > "${INFO_METRICS}" << INFOEOF
+# HELP nosweb_host_info NOSweb host identity information
+# TYPE nosweb_host_info gauge
+nosweb_host_info{wallet="${wallet}"} 1
+INFOEOF
+
+    chmod 644 "${INFO_METRICS}"
+    info "Host info metrics generated (wallet: ${wallet:0:5}...)."
+}
+
+# -----------------------------------------------------------------------------
 # Generate Prometheus config
 # -----------------------------------------------------------------------------
 generate_prometheus_config() {
@@ -401,6 +472,21 @@ scrape_configs:
 
   - job_name: 'dcgm-fleet'
     metrics_path: '/metrics/dcgm'
+    file_sd_configs:
+      - files: ['/etc/prometheus/targets/fleet.json']
+        refresh_interval: 30s
+
+  - job_name: 'nosweb-info'
+    metrics_path: '/metrics/info'
+    scrape_interval: 60s
+    static_configs:
+      - targets: ['${C_PROXY}:80']
+        labels:
+          host: '${my_hostname}'
+
+  - job_name: 'info-fleet'
+    metrics_path: '/metrics/info'
+    scrape_interval: 60s
     file_sd_configs:
       - files: ['/etc/prometheus/targets/fleet.json']
         refresh_interval: 30s
@@ -771,13 +857,14 @@ generate_fleet_dashboard() {
         {"refId": "C", "expr": "max by (host, gpu)(DCGM_FI_DEV_POWER_USAGE) / max by (host, gpu)(DCGM_FI_DEV_POWER_MGMT_LIMIT) * 100", "format": "table", "instant": true},
         {"refId": "D", "expr": "max by (host, gpu)(DCGM_FI_DEV_FAN_SPEED)", "format": "table", "instant": true},
         {"refId": "E", "expr": "max by (host, gpu)(max_over_time(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS[15m])) >= bool 4", "format": "table", "instant": true},
-        {"refId": "F", "expr": "label_replace(max by (host, gpu, modelName)(DCGM_FI_DEV_GPU_TEMP * 0 + 1), \"model\", \"$1\", \"modelName\", \"(?:NVIDIA )?(?:GeForce )?(.+)\")", "format": "table", "instant": true}
+        {"refId": "F", "expr": "label_replace(max by (host, gpu, modelName)(DCGM_FI_DEV_GPU_TEMP * 0 + 1), \"model\", \"$1\", \"modelName\", \"(?:NVIDIA )?(?:GeForce )?(.+)\")", "format": "table", "instant": true},
+        {"refId": "G", "expr": "label_replace(max by (host, wallet)(nosweb_host_info), \"wallet_short\", \"$1...\", \"wallet\", \"^(.{5}).*\")", "format": "table", "instant": true}
       ],
       "transformations": [
         {"id": "merge", "options": {}},
         {"id": "organize", "options": {
-          "excludeByName": {"Time": true, "Time 1": true, "Time 2": true, "Time 3": true, "Time 4": true, "Time 5": true, "Time 6": true, "modelName": true, "Value #F": true},
-          "indexByName": {"gpu": 0, "host": 1, "model": 2, "Value #A": 3, "Value #B": 4, "Value #C": 5, "Value #D": 6, "Value #E": 7},
+          "excludeByName": {"Time": true, "Time 1": true, "Time 2": true, "Time 3": true, "Time 4": true, "Time 5": true, "Time 6": true, "Time 7": true, "modelName": true, "Value #F": true, "Value #G": true},
+          "indexByName": {"gpu": 0, "host": 1, "model": 2, "Value #A": 3, "Value #B": 4, "Value #C": 5, "Value #D": 6, "Value #E": 7, "wallet_short": 8, "wallet": 9},
           "renameByName": {
             "host": "Host",
             "gpu": "GPU",
@@ -786,7 +873,9 @@ generate_fleet_dashboard() {
             "Value #B": "Temp",
             "Value #C": "Power %",
             "Value #D": "Fan %",
-            "Value #E": "Throttle"
+            "Value #E": "Throttle",
+            "wallet_short": "Explorer",
+            "wallet": "wallet"
           }
         }}
       ],
@@ -871,6 +960,22 @@ generate_fleet_dashboard() {
               {"id": "custom.cellOptions", "value": {"type": "color-text"}},
               {"id": "custom.width", "value": 100}
             ]
+          },
+          {
+            "matcher": {"id": "byName", "options": "Explorer"},
+            "properties": [
+              {"id": "custom.width", "value": 85},
+              {"id": "custom.align", "value": "left"},
+              {"id": "color", "value": {"mode": "fixed", "fixedColor": "#6EA8FE"}},
+              {"id": "custom.cellOptions", "value": {"type": "color-text"}},
+              {"id": "links", "value": [{"title": "Nosana Explorer", "url": "https://explore.nosana.com/hosts/${__data.fields.wallet}", "targetBlank": true}]}
+            ]
+          },
+          {
+            "matcher": {"id": "byName", "options": "wallet"},
+            "properties": [
+              {"id": "custom.hidden", "value": true}
+            ]
           }
         ]
       },
@@ -935,6 +1040,7 @@ MY_IP="${NOSWEB_IP}"
 MY_HOST="${NOSWEB_HOSTNAME}"
 MY_GROUP="${NOSWEB_GROUP}"
 MY_PORT="${NOSWEB_PORT:-19999}"
+MY_WALLET="${NOSWEB_WALLET:-unknown}"
 INTERVAL=30
 OFFLINE_AFTER=180
 SCAN_DIR="/tmp/discovery_scan"
@@ -946,7 +1052,7 @@ mkdir -p "$(dirname "$TARGETS_FILE")" "$SCAN_DIR"
 
 # ── Write identity file for nginx to serve at /discovery ──
 cat > /data/discovery.json << IDJSON
-{"host":"${MY_HOST}","ip":"${MY_IP}","group":"${MY_GROUP}","port":${MY_PORT},"version":"${NOSWEB_VERSION:-unknown}"}
+{"host":"${MY_HOST}","ip":"${MY_IP}","group":"${MY_GROUP}","port":${MY_PORT},"version":"${NOSWEB_VERSION:-unknown}","wallet":"${MY_WALLET}"}
 IDJSON
 
 # ── Derive /24 subnet base from own IP ──
@@ -1167,6 +1273,11 @@ ${auth_block}
             auth_basic off;
             proxy_pass http://${C_DCGM}:${PORT_DCGM}/metrics;
             proxy_set_header Host \$host;
+        }
+        location = /metrics/info {
+            auth_basic off;
+            default_type text/plain;
+            alias /data/info_metrics;
         }
 
         # Fleet discovery endpoint — serves host identity JSON (no auth)
@@ -1429,10 +1540,11 @@ launch_proxy() {
     step "Pulling Nginx..."
     docker pull "${IMG_NGINX}"
 
-    local my_ip my_hostname my_group
+    local my_ip my_hostname my_group my_wallet
     my_ip=$(get_ip)
     my_hostname=$(get_hostname)
     my_group=$(cat "${GROUP_FILE}" 2>/dev/null || echo "${DEFAULT_GROUP}")
+    my_wallet=$(cat "${WALLET_FILE}" 2>/dev/null || echo "unknown")
 
     step "Launching proxy on port ${DEFAULT_PORT}..."
     local -a cmd=(
@@ -1445,6 +1557,7 @@ launch_proxy() {
         -v "${NGINX_CONF}:/etc/nginx/nginx.conf:ro"
         -v "${PROXY_ENTRYPOINT}:/data/entrypoint.sh:ro"
         -v "${DISCOVERY_SCRIPT}:/data/discovery.sh:ro"
+        -v "${INFO_METRICS}:/data/info_metrics:ro"
         -v "${PEERS_FILE}:/data/peers.dat"
         -v "${SEED_PEERS_FILE}:/data/seed_peers:ro"
         -v "${PROM_TARGETS}:/data/targets"
@@ -1453,6 +1566,7 @@ launch_proxy() {
         -e "NOSWEB_GROUP=${my_group}"
         -e "NOSWEB_PORT=${DEFAULT_PORT}"
         -e "NOSWEB_VERSION=${NOSWEB_VERSION}"
+        -e "NOSWEB_WALLET=${my_wallet}"
     )
 
     [ "${NOLOGIN}" = false ] && [ -f "${HTPASSWD_FILE}" ] && \
@@ -1609,6 +1723,7 @@ main() {
     setup_config
     setup_group "${group_arg}"
     setup_peers "${peer_args[@]}"
+    setup_wallet
     cleanup_containers
     cleanup_legacy_volumes
     ensure_network
@@ -1622,6 +1737,7 @@ main() {
 
     echo ""
     generate_dcgm_counters
+    generate_info_metrics
     generate_prometheus_config
     generate_grafana_provisioning
     generate_dashboards
@@ -1780,4 +1896,6 @@ main "$@"
 #   0.02.06  Fix fleet.json always empty — file bind mount inode replaced by mv
 #   0.02.07  Fix fleet.json permission denied — chmod 644 for Prometheus nobody user
 #   0.02.08  Fleet dashboard: GPU Model column via DCGM modelName label_replace
+#   0.02.09  Wallet detection + Explorer column: Nosana wallet address from keypair,
+#            /metrics/info endpoint, clickable link to explore.nosana.com
 # =============================================================================
