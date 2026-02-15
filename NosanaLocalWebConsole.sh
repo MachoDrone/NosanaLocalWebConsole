@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-NOSWEB_VERSION="0.02.12"
+NOSWEB_VERSION="0.02.13"
 echo "v${NOSWEB_VERSION}"
 sleep 3
 # =============================================================================
@@ -857,8 +857,8 @@ generate_fleet_dashboard() {
   "panels": [
     {
       "id": 1, "type": "table", "title": "GPU Fleet Status",
-      "description": "One row per GPU. Bus=PCIe peak 24h (grey=idle, dark-green=active, green=optimal Gen4x16+). Throttle=last 15m.",
-      "gridPos": {"h": 20, "w": 24, "x": 0, "y": 0},
+      "description": "One row per GPU. Bus=PCIe peak 24h. SSD=root disk usage per host.",
+      "gridPos": {"h": 14, "w": 24, "x": 0, "y": 0},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {"refId": "A", "expr": "max by (host, gpu)(DCGM_FI_DEV_GPU_UTIL)", "format": "table", "instant": true},
@@ -868,14 +868,17 @@ generate_fleet_dashboard() {
         {"refId": "E", "expr": "clamp_max(floor(max by (host, gpu)(max_over_time(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS[15m])) / 4) % 2, 1) + clamp_max(floor(max by (host, gpu)(max_over_time(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS[15m])) / 8) % 2, 1) * 2", "format": "table", "instant": true},
         {"refId": "F", "expr": "label_replace(max by (host, gpu, modelName)(DCGM_FI_DEV_GPU_TEMP * 0 + 1), \"model\", \"$1\", \"modelName\", \"(?:NVIDIA )?(?:GeForce )?(.+)\")", "format": "table", "instant": true},
         {"refId": "G", "expr": "label_replace(max by (host, wallet)(nosweb_host_info), \"wallet_short\", \"$1...\", \"wallet\", \"^(.{5}).*\")", "format": "table", "instant": true},
-        {"refId": "H", "expr": "max by (host, gpu)(max_over_time(DCGM_FI_DEV_PCIE_LINK_GEN[24h])) * 100 + max by (host, gpu)(max_over_time(DCGM_FI_DEV_PCIE_LINK_WIDTH[24h]))", "format": "table", "instant": true}
+        {"refId": "H", "expr": "max by (host, gpu)(max_over_time(DCGM_FI_DEV_PCIE_LINK_GEN[24h])) * 100 + max by (host, gpu)(max_over_time(DCGM_FI_DEV_PCIE_LINK_WIDTH[24h]))", "format": "table", "instant": true},
+        {"refId": "I", "expr": "max by (host)(netdata_disk_space_GiB_average{family=\"/\",dimension=\"used\"}) / (max by (host)(netdata_disk_space_GiB_average{family=\"/\",dimension=\"used\"}) + max by (host)(netdata_disk_space_GiB_average{family=\"/\",dimension=\"avail\"})) * 100", "format": "table", "instant": true}
       ],
       "transformations": [
         {"id": "merge", "options": {}},
         {"id": "organize", "options": {
-          "excludeByName": {"Time": true, "Time 1": true, "Time 2": true, "Time 3": true, "Time 4": true, "Time 5": true, "Time 6": true, "Time 7": true, "Time 8": true, "modelName": true, "Value #F": true, "Value #G": true},
-          "indexByName": {"host": 0, "gpu": 1, "model": 2, "Value #H": 3, "Value #A": 4, "Value #B": 5, "Value #C": 6, "Value #D": 7, "Value #E": 8, "wallet_short": 9, "wallet": 10},
+          "excludeByName": {"Time": true, "Time 1": true, "Time 2": true, "Time 3": true, "Time 4": true, "Time 5": true, "Time 6": true, "Time 7": true, "Time 8": true, "Time 9": true, "modelName": true, "Value #F": true, "Value #G": true},
+          "indexByName": {"wallet_short": 0, "wallet": 1, "host": 2, "gpu": 3, "model": 4, "Value #H": 5, "Value #A": 6, "Value #B": 7, "Value #C": 8, "Value #D": 9, "Value #E": 10, "Value #I": 11},
           "renameByName": {
+            "wallet_short": "Explorer",
+            "wallet": "wallet",
             "host": "PC",
             "gpu": "GPUid",
             "model": "Model",
@@ -885,8 +888,7 @@ generate_fleet_dashboard() {
             "Value #C": "Power %",
             "Value #D": "Fan %",
             "Value #E": "Throttle",
-            "wallet_short": "Explorer",
-            "wallet": "wallet"
+            "Value #I": "SSD"
           }
         }}
       ],
@@ -896,9 +898,23 @@ generate_fleet_dashboard() {
         },
         "overrides": [
           {
+            "matcher": {"id": "byName", "options": "Explorer"},
+            "properties": [
+              {"id": "custom.width", "value": 65},
+              {"id": "custom.align", "value": "left"},
+              {"id": "color", "value": {"mode": "fixed", "fixedColor": "#6EA8FE"}},
+              {"id": "custom.cellOptions", "value": {"type": "color-text"}},
+              {"id": "links", "value": [{"title": "Nosana Explorer", "url": "https://explore.nosana.com/hosts/${__data.fields.wallet}", "targetBlank": true}]}
+            ]
+          },
+          {
+            "matcher": {"id": "byName", "options": "wallet"},
+            "properties": [{"id": "custom.hidden", "value": true}]
+          },
+          {
             "matcher": {"id": "byName", "options": "PC"},
             "properties": [
-              {"id": "custom.width", "value": 70},
+              {"id": "custom.width", "value": 55},
               {"id": "custom.align", "value": "left"}
             ]
           },
@@ -909,14 +925,14 @@ generate_fleet_dashboard() {
           {
             "matcher": {"id": "byName", "options": "Model"},
             "properties": [
-              {"id": "custom.width", "value": 100},
+              {"id": "custom.width", "value": 90},
               {"id": "custom.align", "value": "left"}
             ]
           },
           {
             "matcher": {"id": "byName", "options": "Bus"},
             "properties": [
-              {"id": "custom.width", "value": 70},
+              {"id": "custom.width", "value": 65},
               {"id": "custom.cellOptions", "value": {"type": "color-text"}},
               {"id": "mappings", "value": [{"type": "value", "options": {
                 "101": {"text": "1.0x1"}, "102": {"text": "1.0x2"}, "104": {"text": "1.0x4"}, "108": {"text": "1.0x8"}, "116": {"text": "1.0x16"},
@@ -941,7 +957,7 @@ generate_fleet_dashboard() {
               {"id": "thresholds", "value": {"mode": "absolute", "steps": [
                 {"value": null, "color": "green"}, {"value": 70, "color": "yellow"}, {"value": 90, "color": "red"}
               ]}},
-              {"id": "custom.width", "value": 120}
+              {"id": "custom.width", "value": 110}
             ]
           },
           {
@@ -953,7 +969,7 @@ generate_fleet_dashboard() {
               {"id": "thresholds", "value": {"mode": "absolute", "steps": [
                 {"value": null, "color": "green"}, {"value": 70, "color": "yellow"}, {"value": 85, "color": "red"}
               ]}},
-              {"id": "custom.width", "value": 100}
+              {"id": "custom.width", "value": 90}
             ]
           },
           {
@@ -965,7 +981,7 @@ generate_fleet_dashboard() {
               {"id": "thresholds", "value": {"mode": "absolute", "steps": [
                 {"value": null, "color": "green"}, {"value": 70, "color": "yellow"}, {"value": 90, "color": "red"}
               ]}},
-              {"id": "custom.width", "value": 100}
+              {"id": "custom.width", "value": 90}
             ]
           },
           {
@@ -977,7 +993,7 @@ generate_fleet_dashboard() {
               {"id": "thresholds", "value": {"mode": "absolute", "steps": [
                 {"value": null, "color": "green"}, {"value": 60, "color": "yellow"}, {"value": 85, "color": "red"}
               ]}},
-              {"id": "custom.width", "value": 90}
+              {"id": "custom.width", "value": 80}
             ]
           },
           {
@@ -986,29 +1002,25 @@ generate_fleet_dashboard() {
               {"id": "mappings", "value": [
                 {"type": "value", "options": {
                   "0": {"text": "OK", "color": "green"},
-                  "1": {"text": "Power Throttle!", "color": "red"},
+                  "1": {"text": "Pwr Throttle!", "color": "red"},
                   "2": {"text": "Heat Throttle!", "color": "red"},
                   "3": {"text": "P+H Throttle!", "color": "red"}
                 }}
               ]},
               {"id": "custom.cellOptions", "value": {"type": "color-text"}},
-              {"id": "custom.width", "value": 115}
+              {"id": "custom.width", "value": 105}
             ]
           },
           {
-            "matcher": {"id": "byName", "options": "Explorer"},
+            "matcher": {"id": "byName", "options": "SSD"},
             "properties": [
-              {"id": "custom.width", "value": 70},
-              {"id": "custom.align", "value": "left"},
-              {"id": "color", "value": {"mode": "fixed", "fixedColor": "#6EA8FE"}},
-              {"id": "custom.cellOptions", "value": {"type": "color-text"}},
-              {"id": "links", "value": [{"title": "Nosana Explorer", "url": "https://explore.nosana.com/hosts/${__data.fields.wallet}", "targetBlank": true}]}
-            ]
-          },
-          {
-            "matcher": {"id": "byName", "options": "wallet"},
-            "properties": [
-              {"id": "custom.hidden", "value": true}
+              {"id": "unit", "value": "percent"}, {"id": "decimals", "value": 0},
+              {"id": "min", "value": 0}, {"id": "max", "value": 100},
+              {"id": "custom.cellOptions", "value": {"type": "gauge", "mode": "gradient"}},
+              {"id": "thresholds", "value": {"mode": "absolute", "steps": [
+                {"value": null, "color": "green"}, {"value": 70, "color": "yellow"}, {"value": 90, "color": "red"}
+              ]}},
+              {"id": "custom.width", "value": 70}
             ]
           }
         ]
@@ -1019,39 +1031,6 @@ generate_fleet_dashboard() {
         "footer": {"show": true, "reducer": ["count"], "countRows": true},
         "sortBy": [{"displayName": "PC", "desc": false}]
       }
-    },
-    {
-      "id": 2, "type": "table", "title": "Host Disk Usage",
-      "description": "Root filesystem usage per host.",
-      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 20},
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "targets": [
-        {"refId": "A", "expr": "max by (host)(netdata_disk_space_GiB_average{family=\"/\",dimension=\"used\"}) / (max by (host)(netdata_disk_space_GiB_average{family=\"/\",dimension=\"used\"}) + max by (host)(netdata_disk_space_GiB_average{family=\"/\",dimension=\"avail\"})) * 100", "format": "table", "instant": true}
-      ],
-      "transformations": [
-        {"id": "organize", "options": {
-          "excludeByName": {"Time": true},
-          "renameByName": {"host": "PC", "Value": "Disk %"}
-        }}
-      ],
-      "fieldConfig": {
-        "defaults": {"custom": {"align": "center", "filterable": true}},
-        "overrides": [
-          {"matcher": {"id": "byName", "options": "PC"}, "properties": [
-            {"id": "custom.width", "value": 100}, {"id": "custom.align", "value": "left"}
-          ]},
-          {"matcher": {"id": "byName", "options": "Disk %"}, "properties": [
-            {"id": "unit", "value": "percent"}, {"id": "decimals", "value": 0},
-            {"id": "min", "value": 0}, {"id": "max", "value": 100},
-            {"id": "custom.cellOptions", "value": {"type": "gauge", "mode": "gradient"}},
-            {"id": "thresholds", "value": {"mode": "absolute", "steps": [
-              {"value": null, "color": "green"}, {"value": 70, "color": "yellow"}, {"value": 90, "color": "red"}
-            ]}}
-          ]}
-        ]
-      },
-      "options": {"showHeader": true, "cellHeight": "sm",
-        "sortBy": [{"displayName": "PC", "desc": false}]}
     }
   ]
 }
@@ -1973,4 +1952,6 @@ main "$@"
 #            fleet-overview as default landing, throttle labels: Power/Heat.
 #   0.02.12  Empty username prompt (no default), reworded setup tip,
 #            fleet panel heights: GPU h=20 (~18 rows), disk h=10 (~8 hosts).
+#   0.02.13  Fleet: SSD gauge column (disk per host), Explorer moved to col 1,
+#            removed separate disk panel, h=14, tighter column widths.
 # =============================================================================
