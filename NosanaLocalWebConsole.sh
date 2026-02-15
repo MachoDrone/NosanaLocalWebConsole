@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-echo "v0.01.15"
+echo "v0.01.16"
 sleep 3
 # =============================================================================
 # NOSweb — GPU Host Monitoring Stack
@@ -332,6 +332,18 @@ global:
   evaluation_interval: 15s
 
 scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+        labels:
+          host: '${my_hostname}'
+
+  - job_name: 'grafana'
+    static_configs:
+      - targets: ['${C_GRAFANA}:3000']
+        labels:
+          host: '${my_hostname}'
+
   - job_name: 'netdata'
     metrics_path: '/api/v1/allmetrics'
     params:
@@ -500,20 +512,20 @@ generate_gpu_dashboard() {
     },
     {
       "id": 19, "type": "stat", "title": "NOSweb Stack",
-      "description": "Memory used by the 5 monitoring containers. If No data check Prometheus for cgroup metric names.",
+      "description": "Monitoring overhead: RAM from Prometheus+Grafana process metrics. Full stack est. ~350-500MB total (includes Netdata, DCGM, nginx).",
       "gridPos": {"h": 6, "w": 7, "x": 17, "y": 6},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
-        {"refId": "A", "expr": "sum({__name__=~\"netdata_cgroup_.*NOSweb.*_mem_usage_MiB_average\", dimension=\"ram\"})", "legendFormat": "RAM"},
-        {"refId": "B", "expr": "sum({__name__=~\"netdata_cgroup_.*NOSweb.*_cpu_percentage_average\", dimension=\"user\"}) + sum({__name__=~\"netdata_cgroup_.*NOSweb.*_cpu_percentage_average\", dimension=\"system\"})", "legendFormat": "CPU %"}
+        {"refId": "A", "expr": "sum(process_resident_memory_bytes{job=~\"prometheus|grafana\"}) / 1024 / 1024", "legendFormat": "Prom+Graf MB"},
+        {"refId": "B", "expr": "sum(rate(process_cpu_seconds_total{job=~\"prometheus|grafana\"}[2m])) * 100", "legendFormat": "CPU %"}
       ],
       "fieldConfig": {"defaults": {"decimals": 0,
         "thresholds": {"mode": "absolute", "steps": [
-          {"value": null, "color": "green"}, {"value": 500, "color": "yellow"}, {"value": 1000, "color": "red"}
+          {"value": null, "color": "green"}, {"value": 300, "color": "yellow"}, {"value": 600, "color": "red"}
         ]}},
         "overrides": [
-          {"matcher": {"id": "byName", "options": "RAM"}, "properties": [{"id": "unit", "value": "decmbytes"}]},
-          {"matcher": {"id": "byName", "options": "CPU %"}, "properties": [{"id": "unit", "value": "percent"}]}
+          {"matcher": {"id": "byName", "options": "Prom+Graf MB"}, "properties": [{"id": "unit", "value": "decmbytes"}]},
+          {"matcher": {"id": "byName", "options": "CPU %"}, "properties": [{"id": "unit", "value": "percent"}, {"id": "decimals", "value": 1}]}
         ]},
       "options": {"graphMode": "area", "colorMode": "value", "textMode": "auto",
         "reduceOptions": {"calcs": ["lastNotNull"]}}
@@ -854,6 +866,7 @@ launch_netdata() {
         -v /var/log:/host/var/log:ro
         -v /etc/localtime:/etc/localtime:ro
         -v /var/run/docker.sock:/var/run/docker.sock:ro
+        -v /sys/fs/cgroup:/host/sys/fs/cgroup:ro
         -v netdata-lib:/var/lib/netdata
         -v netdata-cache:/var/cache/netdata
     )
