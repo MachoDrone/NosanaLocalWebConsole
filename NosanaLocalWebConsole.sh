@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-NOSWEB_VERSION="0.02.06"
+NOSWEB_VERSION="0.02.07"
 echo "v${NOSWEB_VERSION}"
 sleep 3
 # =============================================================================
@@ -967,6 +967,7 @@ write_targets() {
         fi
     done < "$PEERS_FILE"
     printf ']' >> "$tmp"
+    chmod 644 "$tmp"
     mv "$tmp" "$TARGETS_FILE"
 }
 
@@ -1750,6 +1751,8 @@ main "$@"
 #   - File-level bind mounts: mv replaces the inode, breaking the mount.
 #     Use cat "$tmp" > "$target" && rm "$tmp" to preserve the inode.
 #     Directory-level mounts are fine with mv (atomic rename).
+#   - Prometheus runs as uid 65534 (nobody). Any file it reads via
+#     bind mount must be world-readable. chmod 644 before mv.
 #
 # CHANGELOG:
 #   0.01.00  Initial Netdata-only deployment
@@ -1765,4 +1768,5 @@ main "$@"
 #   0.02.05  Fleet Overview dashboard: compact GPU table with gauge bars,
 #            15m throttle lookback, host disk usage bar gauge panel
 #   0.02.06  Fix fleet.json always empty — file bind mount inode replaced by mv
+#   0.02.07  Fix fleet.json permission denied — chmod 644 for Prometheus nobody user
 # =============================================================================
