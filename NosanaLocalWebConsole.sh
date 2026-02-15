@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-echo "v0.01.14"
+echo "v0.01.15"
 sleep 3
 # =============================================================================
 # NOSweb — GPU Host Monitoring Stack
@@ -405,7 +405,7 @@ generate_gpu_dashboard() {
   "tags": ["gpu", "nvidia", "dcgm"],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 5,
+  "version": 6,
   "refresh": "10s",
   "time": {"from": "now-1h", "to": "now"},
   "panels": [
@@ -451,7 +451,7 @@ generate_gpu_dashboard() {
     },
     {
       "id": 11, "type": "gauge", "title": "Fan Speed",
-      "gridPos": {"h": 6, "w": 6, "x": 0, "y": 6},
+      "gridPos": {"h": 6, "w": 5, "x": 0, "y": 6},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [{"refId": "A", "expr": "max by (gpu)(DCGM_FI_DEV_FAN_SPEED)", "legendFormat": "GPU {{gpu}}"}],
       "fieldConfig": {"defaults": {"unit": "percent", "decimals": 0, "min": 0, "max": 100,
@@ -460,39 +460,63 @@ generate_gpu_dashboard() {
         ]}}}
     },
     {
-      "id": 13, "type": "stat", "title": "Throttle Status",
-      "description": "SW = software power cap. HW = hardware thermal slowdown. Shows OK (green) or ACTIVE (red). DCGM bitmask - no timestamps available.",
-      "gridPos": {"h": 6, "w": 12, "x": 6, "y": 6},
+      "id": 13, "type": "stat", "title": "Throttle",
+      "description": "SW=power cap HW=thermal. Idle=GPU sleeping OK=active Throttled!=active+limited",
+      "gridPos": {"h": 6, "w": 7, "x": 5, "y": 6},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
-        {"refId": "A", "expr": "clamp_max(floor(max by (gpu)(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS) / 4) % 2, 1)", "legendFormat": "GPU {{gpu}} SW"},
-        {"refId": "B", "expr": "clamp_max(floor(max by (gpu)(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS) / 8) % 2, 1)", "legendFormat": "GPU {{gpu}} HW"}
+        {"refId": "A", "expr": "clamp_max(floor(max by (gpu)(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS) / 4) % 2, 1) * 2 + (max by (gpu)(DCGM_FI_DEV_PSTATE) < bool 8)", "legendFormat": "GPU {{gpu}} SW"},
+        {"refId": "B", "expr": "clamp_max(floor(max by (gpu)(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS) / 8) % 2, 1) * 2 + (max by (gpu)(DCGM_FI_DEV_PSTATE) < bool 8)", "legendFormat": "GPU {{gpu}} HW"}
       ],
       "fieldConfig": {"defaults": {
-        "decimals": 0, "noValue": "OK",
+        "decimals": 0, "noValue": "N/A",
         "mappings": [
-          {"type": "value", "options": {"0": {"text": "OK", "color": "green"}}},
-          {"type": "value", "options": {"1": {"text": "ACTIVE", "color": "red"}}}
+          {"type": "value", "options": {"0": {"text": "Idle", "color": "#808080"}}},
+          {"type": "value", "options": {"1": {"text": "OK", "color": "green"}}},
+          {"type": "value", "options": {"2": {"text": "Throttled!", "color": "red"}}},
+          {"type": "value", "options": {"3": {"text": "Throttled!", "color": "red"}}}
         ],
-        "thresholds": {"mode": "absolute", "steps": [
-          {"value": null, "color": "green"}, {"value": 1, "color": "red"}
-        ]}}},
+        "thresholds": {"mode": "absolute", "steps": [{"value": null, "color": "#808080"}]}}},
       "options": {"graphMode": "none", "colorMode": "value", "textMode": "auto", "orientation": "horizontal",
         "reduceOptions": {"calcs": ["lastNotNull"]},
-        "text": {"titleSize": 12, "valueSize": 18}}
+        "text": {"titleSize": 11, "valueSize": 14}}
     },
     {
-      "id": 14, "type": "stat", "title": "PCIe Link (peak 24h)",
-      "description": "Highest negotiated PCIe gen and width in last 24 hours.",
-      "gridPos": {"h": 6, "w": 6, "x": 18, "y": 6},
+      "id": 14, "type": "stat", "title": "PCIe (peak 24h)",
+      "description": "Highest negotiated PCIe gen and width in last 24h. Low at idle (ASPM).",
+      "gridPos": {"h": 6, "w": 5, "x": 12, "y": 6},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {"refId": "A", "expr": "max by (gpu)(max_over_time(DCGM_FI_DEV_PCIE_LINK_GEN[24h]))", "legendFormat": "GPU {{gpu}} Gen"},
         {"refId": "B", "expr": "max by (gpu)(max_over_time(DCGM_FI_DEV_PCIE_LINK_WIDTH[24h]))", "legendFormat": "GPU {{gpu}} x"}
       ],
       "fieldConfig": {"defaults": {"decimals": 0, "noValue": "N/A",
-        "thresholds": {"mode": "absolute", "steps": [{"value": null, "color": "blue"}]}}},
-      "options": {"graphMode": "none", "colorMode": "value", "textMode": "auto", "reduceOptions": {"calcs": ["lastNotNull"]}}
+        "thresholds": {"mode": "absolute", "steps": [
+          {"value": null, "color": "dark-green"}, {"value": 2, "color": "green"}
+        ]}}},
+      "options": {"graphMode": "none", "colorMode": "value", "textMode": "auto", "orientation": "horizontal",
+        "reduceOptions": {"calcs": ["lastNotNull"]},
+        "text": {"titleSize": 11, "valueSize": 14}}
+    },
+    {
+      "id": 19, "type": "stat", "title": "NOSweb Stack",
+      "description": "Memory used by the 5 monitoring containers. If No data check Prometheus for cgroup metric names.",
+      "gridPos": {"h": 6, "w": 7, "x": 17, "y": 6},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"refId": "A", "expr": "sum({__name__=~\"netdata_cgroup_.*NOSweb.*_mem_usage_MiB_average\", dimension=\"ram\"})", "legendFormat": "RAM"},
+        {"refId": "B", "expr": "sum({__name__=~\"netdata_cgroup_.*NOSweb.*_cpu_percentage_average\", dimension=\"user\"}) + sum({__name__=~\"netdata_cgroup_.*NOSweb.*_cpu_percentage_average\", dimension=\"system\"})", "legendFormat": "CPU %"}
+      ],
+      "fieldConfig": {"defaults": {"decimals": 0,
+        "thresholds": {"mode": "absolute", "steps": [
+          {"value": null, "color": "green"}, {"value": 500, "color": "yellow"}, {"value": 1000, "color": "red"}
+        ]}},
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "RAM"}, "properties": [{"id": "unit", "value": "decmbytes"}]},
+          {"matcher": {"id": "byName", "options": "CPU %"}, "properties": [{"id": "unit", "value": "percent"}]}
+        ]},
+      "options": {"graphMode": "area", "colorMode": "value", "textMode": "auto",
+        "reduceOptions": {"calcs": ["lastNotNull"]}}
     },
     {
       "id": 5, "type": "timeseries", "title": "GPU Utilization Over Time",
@@ -564,7 +588,7 @@ generate_gpu_dashboard() {
     },
     {
       "id": 15, "type": "timeseries", "title": "Throttle Events",
-      "description": "SW = software power cap (bit 0x4). HW = hardware thermal (bit 0x8). Value 1 = actively throttling.",
+      "description": "SW=power cap HW=thermal. Value 1 = actively throttling.",
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 28},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
@@ -584,7 +608,7 @@ generate_gpu_dashboard() {
     },
     {
       "id": 18, "type": "timeseries", "title": "PCIe Link Speed Over Time",
-      "description": "PCIe generation and lane width. Drops at idle due to ASPM power saving.",
+      "description": "PCIe gen and lane width. Drops at idle (ASPM).",
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 36},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
