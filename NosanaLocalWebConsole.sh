@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-NOSWEB_VERSION="0.02.04"
+NOSWEB_VERSION="0.02.05"
 echo "v${NOSWEB_VERSION}"
 sleep 3
 # =============================================================================
@@ -747,13 +747,162 @@ generate_host_dashboard() {
 HOSTEOF
 }
 
+generate_fleet_dashboard() {
+    cat > "${GRAFANA_DASH}/fleet-overview.json" << 'FLEETEOF'
+{
+  "uid": "fleet-overview",
+  "title": "Fleet Overview",
+  "description": "All GPUs across all hosts — compact status view",
+  "tags": ["fleet", "gpu", "overview"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": {"from": "now-15m", "to": "now"},
+  "panels": [
+    {
+      "id": 1, "type": "table", "title": "GPU Fleet Status",
+      "description": "One row per GPU across all discovered hosts. Gauge bars: green/yellow/red. Throttle checks last 15m.",
+      "gridPos": {"h": 18, "w": 24, "x": 0, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"refId": "A", "expr": "max by (host, gpu)(DCGM_FI_DEV_GPU_UTIL)", "format": "table", "instant": true},
+        {"refId": "B", "expr": "max by (host, gpu)(DCGM_FI_DEV_GPU_TEMP)", "format": "table", "instant": true},
+        {"refId": "C", "expr": "max by (host, gpu)(DCGM_FI_DEV_POWER_USAGE) / max by (host, gpu)(DCGM_FI_DEV_POWER_MGMT_LIMIT) * 100", "format": "table", "instant": true},
+        {"refId": "D", "expr": "max by (host, gpu)(DCGM_FI_DEV_FAN_SPEED)", "format": "table", "instant": true},
+        {"refId": "E", "expr": "max by (host, gpu)(max_over_time(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS[15m])) >= bool 4", "format": "table", "instant": true}
+      ],
+      "transformations": [
+        {"id": "merge", "options": {}},
+        {"id": "organize", "options": {
+          "excludeByName": {"Time": true, "Time 1": true, "Time 2": true, "Time 3": true, "Time 4": true, "Time 5": true},
+          "renameByName": {
+            "host": "Host",
+            "gpu": "GPU",
+            "Value #A": "Util %",
+            "Value #B": "Temp",
+            "Value #C": "Power %",
+            "Value #D": "Fan %",
+            "Value #E": "Throttle"
+          }
+        }}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {"align": "center", "inspect": false, "filterable": true}
+        },
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "Host"},
+            "properties": [
+              {"id": "custom.width", "value": 130},
+              {"id": "custom.align", "value": "left"}
+            ]
+          },
+          {
+            "matcher": {"id": "byName", "options": "GPU"},
+            "properties": [{"id": "custom.width", "value": 50}]
+          },
+          {
+            "matcher": {"id": "byName", "options": "Util %"},
+            "properties": [
+              {"id": "unit", "value": "percent"}, {"id": "decimals", "value": 0},
+              {"id": "min", "value": 0}, {"id": "max", "value": 100},
+              {"id": "custom.cellOptions", "value": {"type": "gauge", "mode": "gradient"}},
+              {"id": "thresholds", "value": {"mode": "absolute", "steps": [
+                {"value": null, "color": "green"}, {"value": 70, "color": "yellow"}, {"value": 90, "color": "red"}
+              ]}},
+              {"id": "custom.width", "value": 150}
+            ]
+          },
+          {
+            "matcher": {"id": "byName", "options": "Temp"},
+            "properties": [
+              {"id": "unit", "value": "celsius"}, {"id": "decimals", "value": 0},
+              {"id": "min", "value": 0}, {"id": "max", "value": 100},
+              {"id": "custom.cellOptions", "value": {"type": "gauge", "mode": "gradient"}},
+              {"id": "thresholds", "value": {"mode": "absolute", "steps": [
+                {"value": null, "color": "green"}, {"value": 70, "color": "yellow"}, {"value": 85, "color": "red"}
+              ]}},
+              {"id": "custom.width", "value": 130}
+            ]
+          },
+          {
+            "matcher": {"id": "byName", "options": "Power %"},
+            "properties": [
+              {"id": "unit", "value": "percent"}, {"id": "decimals", "value": 0},
+              {"id": "min", "value": 0}, {"id": "max", "value": 100},
+              {"id": "custom.cellOptions", "value": {"type": "gauge", "mode": "gradient"}},
+              {"id": "thresholds", "value": {"mode": "absolute", "steps": [
+                {"value": null, "color": "green"}, {"value": 70, "color": "yellow"}, {"value": 90, "color": "red"}
+              ]}},
+              {"id": "custom.width", "value": 130}
+            ]
+          },
+          {
+            "matcher": {"id": "byName", "options": "Fan %"},
+            "properties": [
+              {"id": "unit", "value": "percent"}, {"id": "decimals", "value": 0},
+              {"id": "min", "value": 0}, {"id": "max", "value": 100},
+              {"id": "custom.cellOptions", "value": {"type": "gauge", "mode": "gradient"}},
+              {"id": "thresholds", "value": {"mode": "absolute", "steps": [
+                {"value": null, "color": "green"}, {"value": 60, "color": "yellow"}, {"value": 85, "color": "red"}
+              ]}},
+              {"id": "custom.width", "value": 120}
+            ]
+          },
+          {
+            "matcher": {"id": "byName", "options": "Throttle"},
+            "properties": [
+              {"id": "mappings", "value": [
+                {"type": "value", "options": {"0": {"text": "", "color": "transparent"}}},
+                {"type": "value", "options": {"1": {"text": "Recent Throttle!", "color": "red"}}}
+              ]},
+              {"id": "custom.cellOptions", "value": {"type": "color-text"}},
+              {"id": "custom.width", "value": 100}
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {"show": true, "reducer": ["count"], "countRows": true},
+        "sortBy": [{"displayName": "Host", "desc": false}]
+      }
+    },
+    {
+      "id": 2, "type": "bargauge", "title": "Host Disk Usage",
+      "description": "Root filesystem usage per host. Green<70%, Yellow<90%, Red>=90%.",
+      "gridPos": {"h": 5, "w": 24, "x": 0, "y": 18},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"refId": "A", "expr": "max by (host)(netdata_disk_space_GiB_average{family=\"/\",dimension=\"used\"}) / (max by (host)(netdata_disk_space_GiB_average{family=\"/\",dimension=\"used\"}) + max by (host)(netdata_disk_space_GiB_average{family=\"/\",dimension=\"avail\"})) * 100", "legendFormat": "{{host}}"}
+      ],
+      "fieldConfig": {"defaults": {
+        "unit": "percent", "decimals": 0, "min": 0, "max": 100,
+        "thresholds": {"mode": "absolute", "steps": [
+          {"value": null, "color": "green"}, {"value": 70, "color": "yellow"}, {"value": 90, "color": "red"}
+        ]}
+      }},
+      "options": {"orientation": "horizontal", "displayMode": "gradient", "showUnfilled": true,
+        "minVizWidth": 10, "minVizHeight": 10,
+        "reduceOptions": {"calcs": ["lastNotNull"]}}
+    }
+  ]
+}
+FLEETEOF
+}
+
 generate_dashboards() {
     generate_gpu_dashboard
     generate_host_dashboard
+    generate_fleet_dashboard
     # Inject version into dashboard titles (heredocs are single-quoted, can't expand vars)
     sed -i "s/\"title\": \"GPU Overview\"/\"title\": \"GPU Overview | NOSweb v${NOSWEB_VERSION}\"/" "${GRAFANA_DASH}/gpu-overview.json"
     sed -i "s/\"title\": \"Host Overview\"/\"title\": \"Host Overview | NOSweb v${NOSWEB_VERSION}\"/" "${GRAFANA_DASH}/host-overview.json"
     sed -i "s/\"title\": \"NOSweb Stack\"/\"title\": \"NOSweb Stack v${NOSWEB_VERSION}\"/" "${GRAFANA_DASH}/gpu-overview.json"
+    sed -i "s/\"title\": \"Fleet Overview\"/\"title\": \"Fleet Overview | NOSweb v${NOSWEB_VERSION}\"/" "${GRAFANA_DASH}/fleet-overview.json"
     info "Grafana dashboards generated."
 }
 
@@ -1531,9 +1680,10 @@ main "$@"
 #   Fleet discovery via HTTP gossip (replaced failed UDP broadcast approach).
 #   Persistent peer database. Prometheus file_sd for cross-host scraping.
 #   Unauthenticated /metrics/ and /discovery endpoints.
+#   Fleet Overview dashboard: compact table with gauge bars per GPU.
 #   Status: Discovery works. Cross-host scraping targets generated.
-#   TODO: Fleet dashboard panel showing discovered peers.
-#   TODO: Cross-host GPU metrics aggregation in Grafana.
+#   TODO: Host selector dropdown on GPU/Host Overview dashboards.
+#   TODO: Deduplicate discovery logs (only log state changes).
 #
 # PHASE 3 (planned)
 #   Fleet-wide Grafana dashboards: aggregate GPU stats across all peers.
@@ -1554,6 +1704,8 @@ main "$@"
 #   - /api/live/ws 403 (Grafana live WebSocket — cosmetic)
 #   - nginx proxy_temp buffering warnings on large assets (cosmetic)
 #   - Discovery logs "peer: X online" every 30s even if known (noisy)
+#   - Fleet disk panel depends on netdata metric name family="/" — may
+#     need adjustment if Netdata labels differ across versions
 #
 # CAVEATS & GOTCHAS (hard-won lessons — do not re-learn these):
 #   DOCKER:
@@ -1576,7 +1728,11 @@ main "$@"
 #   - Heredoc dashboards are single-quoted (no variable expansion).
 #     Version and hostname must be injected via sed AFTER generation.
 #   - Dashboard UIDs must be stable across re-deploys or bookmarks break.
-#     We hardcode: gpu-overview, host-overview.
+#     We hardcode: gpu-overview, host-overview, fleet-overview.
+#   - Table panel gauge cells: use custom.cellOptions.type "gauge" with
+#     mode "gradient" for colored bar-in-cell. Requires Grafana 10+.
+#   - Table merge transformation: all queries must share the same label
+#     set (e.g. host+gpu) or columns won't align after merge.
 #   DCGM:
 #   - CSV counter files cannot contain comments or blank lines — the
 #     parser treats them as field definitions and fails silently.
@@ -1603,4 +1759,6 @@ main "$@"
 #   0.02.02  /discovery endpoint, version in dashboard titles
 #   0.02.03  Fix DISCOVERY_PORT unbound variable
 #   0.02.04  NOSweb Stack version label, mv cross-device fix, MIME fix
+#   0.02.05  Fleet Overview dashboard: compact GPU table with gauge bars,
+#            15m throttle lookback, host disk usage bar gauge panel
 # =============================================================================
