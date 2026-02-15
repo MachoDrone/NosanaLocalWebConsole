@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-NOSWEB_VERSION="0.02.13"
+NOSWEB_VERSION="0.02.14"
 echo "v${NOSWEB_VERSION}"
 sleep 3
 # =============================================================================
@@ -491,6 +491,21 @@ scrape_configs:
     file_sd_configs:
       - files: ['/etc/prometheus/targets/fleet.json']
         refresh_interval: 30s
+
+  - job_name: 'balance'
+    metrics_path: '/metrics/balance'
+    scrape_interval: 300s
+    static_configs:
+      - targets: ['${C_PROXY}:80']
+        labels:
+          host: '${my_hostname}'
+
+  - job_name: 'balance-fleet'
+    metrics_path: '/metrics/balance'
+    scrape_interval: 300s
+    file_sd_configs:
+      - files: ['/etc/prometheus/targets/fleet.json']
+        refresh_interval: 30s
 PROMEOF
 
     # Phase 1: local targets (container names on Docker network)
@@ -857,7 +872,7 @@ generate_fleet_dashboard() {
   "panels": [
     {
       "id": 1, "type": "table", "title": "GPU Fleet Status",
-      "description": "One row per GPU. Bus=PCIe peak 24h. SSD=root disk usage per host.",
+      "description": "One row per GPU. Bus=PCIe peak 24h. Storage=root disk. SOL/STK/NOS=wallet balances (updates every 5m).",
       "gridPos": {"h": 14, "w": 24, "x": 0, "y": 0},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
@@ -869,13 +884,16 @@ generate_fleet_dashboard() {
         {"refId": "F", "expr": "label_replace(max by (host, gpu, modelName)(DCGM_FI_DEV_GPU_TEMP * 0 + 1), \"model\", \"$1\", \"modelName\", \"(?:NVIDIA )?(?:GeForce )?(.+)\")", "format": "table", "instant": true},
         {"refId": "G", "expr": "label_replace(max by (host, wallet)(nosweb_host_info), \"wallet_short\", \"$1...\", \"wallet\", \"^(.{5}).*\")", "format": "table", "instant": true},
         {"refId": "H", "expr": "max by (host, gpu)(max_over_time(DCGM_FI_DEV_PCIE_LINK_GEN[24h])) * 100 + max by (host, gpu)(max_over_time(DCGM_FI_DEV_PCIE_LINK_WIDTH[24h]))", "format": "table", "instant": true},
-        {"refId": "I", "expr": "max by (host)(netdata_disk_space_GiB_average{family=\"/\",dimension=\"used\"}) / (max by (host)(netdata_disk_space_GiB_average{family=\"/\",dimension=\"used\"}) + max by (host)(netdata_disk_space_GiB_average{family=\"/\",dimension=\"avail\"})) * 100", "format": "table", "instant": true}
+        {"refId": "I", "expr": "max by (host)(netdata_disk_space_GiB_average{family=\"/\",dimension=\"used\"}) / (max by (host)(netdata_disk_space_GiB_average{family=\"/\",dimension=\"used\"}) + max by (host)(netdata_disk_space_GiB_average{family=\"/\",dimension=\"avail\"})) * 100", "format": "table", "instant": true},
+        {"refId": "J", "expr": "max by (host)(nosweb_sol_balance)", "format": "table", "instant": true},
+        {"refId": "K", "expr": "max by (host)(nosweb_nos_staked)", "format": "table", "instant": true},
+        {"refId": "L", "expr": "max by (host)(nosweb_nos_balance)", "format": "table", "instant": true}
       ],
       "transformations": [
         {"id": "merge", "options": {}},
         {"id": "organize", "options": {
-          "excludeByName": {"Time": true, "Time 1": true, "Time 2": true, "Time 3": true, "Time 4": true, "Time 5": true, "Time 6": true, "Time 7": true, "Time 8": true, "Time 9": true, "modelName": true, "Value #F": true, "Value #G": true},
-          "indexByName": {"wallet_short": 0, "wallet": 1, "host": 2, "gpu": 3, "model": 4, "Value #H": 5, "Value #A": 6, "Value #B": 7, "Value #C": 8, "Value #D": 9, "Value #E": 10, "Value #I": 11},
+          "excludeByName": {"Time": true, "Time 1": true, "Time 2": true, "Time 3": true, "Time 4": true, "Time 5": true, "Time 6": true, "Time 7": true, "Time 8": true, "Time 9": true, "Time 10": true, "Time 11": true, "Time 12": true, "modelName": true, "Value #F": true, "Value #G": true},
+          "indexByName": {"wallet_short": 0, "wallet": 1, "host": 2, "gpu": 3, "model": 4, "Value #H": 5, "Value #A": 6, "Value #B": 7, "Value #C": 8, "Value #D": 9, "Value #E": 10, "Value #I": 11, "Value #J": 12, "Value #K": 13, "Value #L": 14},
           "renameByName": {
             "wallet_short": "Explorer",
             "wallet": "wallet",
@@ -888,7 +906,10 @@ generate_fleet_dashboard() {
             "Value #C": "Power %",
             "Value #D": "Fan %",
             "Value #E": "Throttle",
-            "Value #I": "SSD"
+            "Value #I": "Storage",
+            "Value #J": "SOL",
+            "Value #K": "STK",
+            "Value #L": "NOS"
           }
         }}
       ],
@@ -957,7 +978,7 @@ generate_fleet_dashboard() {
               {"id": "thresholds", "value": {"mode": "absolute", "steps": [
                 {"value": null, "color": "green"}, {"value": 70, "color": "yellow"}, {"value": 90, "color": "red"}
               ]}},
-              {"id": "custom.width", "value": 110}
+              {"id": "custom.width", "value": 100}
             ]
           },
           {
@@ -969,7 +990,7 @@ generate_fleet_dashboard() {
               {"id": "thresholds", "value": {"mode": "absolute", "steps": [
                 {"value": null, "color": "green"}, {"value": 70, "color": "yellow"}, {"value": 85, "color": "red"}
               ]}},
-              {"id": "custom.width", "value": 90}
+              {"id": "custom.width", "value": 80}
             ]
           },
           {
@@ -981,7 +1002,7 @@ generate_fleet_dashboard() {
               {"id": "thresholds", "value": {"mode": "absolute", "steps": [
                 {"value": null, "color": "green"}, {"value": 70, "color": "yellow"}, {"value": 90, "color": "red"}
               ]}},
-              {"id": "custom.width", "value": 90}
+              {"id": "custom.width", "value": 80}
             ]
           },
           {
@@ -993,7 +1014,7 @@ generate_fleet_dashboard() {
               {"id": "thresholds", "value": {"mode": "absolute", "steps": [
                 {"value": null, "color": "green"}, {"value": 60, "color": "yellow"}, {"value": 85, "color": "red"}
               ]}},
-              {"id": "custom.width", "value": 80}
+              {"id": "custom.width", "value": 70}
             ]
           },
           {
@@ -1008,11 +1029,11 @@ generate_fleet_dashboard() {
                 }}
               ]},
               {"id": "custom.cellOptions", "value": {"type": "color-text"}},
-              {"id": "custom.width", "value": 105}
+              {"id": "custom.width", "value": 100}
             ]
           },
           {
-            "matcher": {"id": "byName", "options": "SSD"},
+            "matcher": {"id": "byName", "options": "Storage"},
             "properties": [
               {"id": "unit", "value": "percent"}, {"id": "decimals", "value": 0},
               {"id": "min", "value": 0}, {"id": "max", "value": 100},
@@ -1021,6 +1042,37 @@ generate_fleet_dashboard() {
                 {"value": null, "color": "green"}, {"value": 70, "color": "yellow"}, {"value": 90, "color": "red"}
               ]}},
               {"id": "custom.width", "value": 70}
+            ]
+          },
+          {
+            "matcher": {"id": "byName", "options": "SOL"},
+            "properties": [
+              {"id": "decimals", "value": 4},
+              {"id": "custom.cellOptions", "value": {"type": "color-text"}},
+              {"id": "thresholds", "value": {"mode": "absolute", "steps": [
+                {"value": null, "color": "red"},
+                {"value": 0.0065, "color": "orange"},
+                {"value": 0.01, "color": "green"}
+              ]}},
+              {"id": "custom.width", "value": 70}
+            ]
+          },
+          {
+            "matcher": {"id": "byName", "options": "STK"},
+            "properties": [
+              {"id": "decimals", "value": 0},
+              {"id": "color", "value": {"mode": "fixed", "fixedColor": "dark-green"}},
+              {"id": "custom.cellOptions", "value": {"type": "color-text"}},
+              {"id": "custom.width", "value": 60}
+            ]
+          },
+          {
+            "matcher": {"id": "byName", "options": "NOS"},
+            "properties": [
+              {"id": "decimals", "value": 6},
+              {"id": "color", "value": {"mode": "fixed", "fixedColor": "dark-green"}},
+              {"id": "custom.cellOptions", "value": {"type": "color-text"}},
+              {"id": "custom.width", "value": 85}
             ]
           }
         ]
@@ -1072,11 +1124,30 @@ MY_WALLET="${NOSWEB_WALLET:-unknown}"
 INTERVAL=30
 OFFLINE_AFTER=180
 SCAN_DIR="/tmp/discovery_scan"
+BALANCE_FILE="/data/targets/balance.prom"
+BALANCE_INTERVAL=300
+SOLANA_RPC="https://api.mainnet-beta.solana.com"
+NOS_MINT="nosXBVoaCTtYdLvKY6Csb4AC8JCdQKKAaWYtx2ZMoo7"
+NOS_STAKE_PROGRAM="nosScmHY2uR24Zh751PmGj9ww9QRNHewh9H59AfrTJE"
 
 log() { echo "[discovery] $*"; }
 
 touch "$PEERS_FILE"
 mkdir -p "$(dirname "$TARGETS_FILE")" "$SCAN_DIR"
+
+# ── Seed empty balance file so nginx doesn't 404 ──
+cat > "$BALANCE_FILE" << BSEED
+# HELP nosweb_sol_balance SOL balance
+# TYPE nosweb_sol_balance gauge
+nosweb_sol_balance 0
+# HELP nosweb_nos_balance NOS token balance
+# TYPE nosweb_nos_balance gauge
+nosweb_nos_balance 0
+# HELP nosweb_nos_staked Staked NOS balance
+# TYPE nosweb_nos_staked gauge
+nosweb_nos_staked 0
+BSEED
+chmod 644 "$BALANCE_FILE"
 
 # ── Write identity file for nginx to serve at /discovery ──
 cat > /data/discovery.json << IDJSON
@@ -1199,13 +1270,75 @@ gossip_round() {
     [ "$changed" -eq 1 ] && log "targets updated"
 }
 
+# ── Fetch wallet balances from Solana RPC ──
+fetch_balances() {
+    [ "$MY_WALLET" = "unknown" ] && return 1
+
+    local sol="0" nos="0" stk="0" resp lamports ui_amount tmp
+
+    # SOL balance (lamports → SOL / 1e9)
+    resp=$(wget -q -T 5 -O - \
+        --header='Content-Type: application/json' \
+        --post-data='{"jsonrpc":"2.0","id":1,"method":"getBalance","params":["'"$MY_WALLET"'"]}' \
+        "$SOLANA_RPC" 2>/dev/null) || { log "balance: SOL RPC failed"; return 1; }
+
+    lamports=$(echo "$resp" | grep -o '"value":[0-9]*' | head -1 | grep -o '[0-9]*$')
+    [ -n "$lamports" ] && sol=$(awk "BEGIN{printf \"%.10f\", $lamports/1000000000}")
+
+    # NOS token balance (SPL token, 6 decimals)
+    resp=$(wget -q -T 5 -O - \
+        --header='Content-Type: application/json' \
+        --post-data='{"jsonrpc":"2.0","id":1,"method":"getTokenAccountsByOwner","params":["'"$MY_WALLET"'",{"mint":"'"$NOS_MINT"'"},{"encoding":"jsonParsed"}]}' \
+        "$SOLANA_RPC" 2>/dev/null) || true
+
+    if [ -n "$resp" ]; then
+        ui_amount=$(echo "$resp" | grep -o '"uiAmount":[0-9.e+A-Z-]*' | head -1 | grep -o '[0-9.e+-]*$')
+        [ -n "$ui_amount" ] && nos="$ui_amount"
+    fi
+
+    # STK: staked NOS via Nosana stake program (getProgramAccounts + memcmp)
+    resp=$(wget -q -T 8 -O - \
+        --header='Content-Type: application/json' \
+        --post-data='{"jsonrpc":"2.0","id":1,"method":"getProgramAccounts","params":["'"$NOS_STAKE_PROGRAM"'",{"encoding":"jsonParsed","filters":[{"memcmp":{"offset":8,"bytes":"'"$MY_WALLET"'","encoding":"base58"}}]}]}' \
+        "$SOLANA_RPC" 2>/dev/null) || true
+
+    if [ -n "$resp" ]; then
+        local stk_raw
+        stk_raw=$(echo "$resp" | grep -o '"amount":"[0-9]*"' | head -1 | grep -o '[0-9]*')
+        [ -n "$stk_raw" ] && stk=$(awk "BEGIN{printf \"%.6f\", $stk_raw/1000000}")
+    fi
+
+    # Write metrics (atomic via mktemp+mv, same directory = same filesystem)
+    tmp=$(mktemp -p "$(dirname "$BALANCE_FILE")")
+    cat > "$tmp" << BALEOF
+# HELP nosweb_sol_balance SOL balance
+# TYPE nosweb_sol_balance gauge
+nosweb_sol_balance $sol
+# HELP nosweb_nos_balance NOS token balance
+# TYPE nosweb_nos_balance gauge
+nosweb_nos_balance $nos
+# HELP nosweb_nos_staked Staked NOS balance
+# TYPE nosweb_nos_staked gauge
+nosweb_nos_staked $stk
+BALEOF
+    chmod 644 "$tmp"
+    mv "$tmp" "$BALANCE_FILE"
+
+    log "balance: SOL=$sol NOS=$nos STK=$stk"
+}
+
 # ── Main loop ──
 log "starting: host=${MY_HOST} ip=${MY_IP} group=${MY_GROUP} port=${MY_PORT}"
 log "mode: HTTP gossip (subnet scan + seed peers)"
 write_targets
 
+last_balance=0
 while true; do
     gossip_round
+    now=$(date +%s)
+    if [ $((now - last_balance)) -ge "$BALANCE_INTERVAL" ]; then
+        fetch_balances && last_balance=$now || true
+    fi
     sleep "$INTERVAL"
 done
 DISCEOF
@@ -1306,6 +1439,11 @@ ${auth_block}
             auth_basic off;
             default_type text/plain;
             alias /data/info_metrics;
+        }
+        location = /metrics/balance {
+            auth_basic off;
+            default_type text/plain;
+            alias /data/targets/balance.prom;
         }
 
         # Fleet discovery endpoint — serves host identity JSON (no auth)
@@ -1954,4 +2092,8 @@ main "$@"
 #            fleet panel heights: GPU h=20 (~18 rows), disk h=10 (~8 hosts).
 #   0.02.13  Fleet: SSD gauge column (disk per host), Explorer moved to col 1,
 #            removed separate disk panel, h=14, tighter column widths.
+#   0.02.14  Fleet: SSD→Storage, SOL/STK/NOS balance columns via Solana RPC.
+#            Discovery script fetches wallet balances every 5m from mainnet.
+#            SOL: red<0.0065, orange<0.01, green>=0.01.
+#            /metrics/balance endpoint + Prometheus balance scrape jobs.
 # =============================================================================
