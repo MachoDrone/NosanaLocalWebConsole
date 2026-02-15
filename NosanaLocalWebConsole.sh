@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-echo "v0.01.10"
+echo "v0.01.11"
 sleep 3
 # =============================================================================
 # NOSweb — GPU Host Monitoring Stack
@@ -284,9 +284,6 @@ create_password() {
 # -----------------------------------------------------------------------------
 generate_dcgm_counters() {
     cat > "${DCGM_COUNTERS}" << 'DCGMEOF'
-# NOSweb custom DCGM counters
-# Format: DCGM_FIELD, prometheus_type, help_text
-# Core metrics
 DCGM_FI_DEV_SM_CLOCK, gauge, SM clock frequency (in MHz).
 DCGM_FI_DEV_MEM_CLOCK, gauge, Memory clock frequency (in MHz).
 DCGM_FI_DEV_GPU_TEMP, gauge, GPU temperature (in C).
@@ -299,23 +296,18 @@ DCGM_FI_DEV_ENC_UTIL, gauge, Encoder utilization (in pct).
 DCGM_FI_DEV_DEC_UTIL, gauge, Decoder utilization (in pct).
 DCGM_FI_DEV_FB_FREE, gauge, Framebuffer memory free (in MiB).
 DCGM_FI_DEV_FB_USED, gauge, Framebuffer memory used (in MiB).
-# Fan and thermal
-DCGM_FI_DEV_FAN_SPEED, gauge, Fan speed (0-100 pct).
+DCGM_FI_DEV_FAN_SPEED, gauge, Fan speed for the device in percent 0-100.
 DCGM_FI_DEV_SLOWDOWN_TEMP, gauge, Slowdown temperature threshold (in C).
 DCGM_FI_DEV_POWER_MGMT_LIMIT, gauge, Power management limit (in W).
-# Performance state
 DCGM_FI_DEV_PSTATE, gauge, Performance state (P-State) 0-15.
-# Throttle reasons and violations
 DCGM_FI_DEV_CLOCK_THROTTLE_REASONS, gauge, Current clock throttle reasons (bitmask).
 DCGM_FI_DEV_POWER_VIOLATION, counter, Power throttling duration (in us).
 DCGM_FI_DEV_THERMAL_VIOLATION, counter, Thermal throttling duration (in us).
-# PCIe info
 DCGM_FI_DEV_PCIE_TX_THROUGHPUT, counter, Total PCIe TX bytes.
 DCGM_FI_DEV_PCIE_RX_THROUGHPUT, counter, Total PCIe RX bytes.
 DCGM_FI_DEV_PCIE_LINK_GEN, gauge, PCIe current link generation.
 DCGM_FI_DEV_PCIE_LINK_WIDTH, gauge, PCIe current link width.
 DCGM_FI_DEV_PCIE_REPLAY_COUNTER, counter, PCIe replay counter.
-# Error tracking
 DCGM_FI_DEV_XID_ERRORS, gauge, XID errors.
 DCGM_FI_DEV_CORRECTABLE_REMAPPED_ROWS, counter, Correctable remapped rows.
 DCGM_FI_DEV_UNCORRECTABLE_REMAPPED_ROWS, counter, Uncorrectable remapped rows.
@@ -890,27 +882,44 @@ launch_dcgm() {
         return 0
     fi
 
+    # Try with custom counters first
     step "Launching DCGM exporter..."
-    if docker run -d \
+    docker run -d \
         --name "${C_DCGM}" \
-        --restart unless-stopped \
+        --restart no \
         --network "${DOCKER_NETWORK}" \
         --gpus all \
         --cap-add SYS_ADMIN \
         -v "${DCGM_COUNTERS}:/etc/dcgm-exporter/default-counters.csv:ro" \
-        "${IMG_DCGM}"; then
-        info "DCGM exporter started."
-    else
-        warn "DCGM failed to start."
-        echo '[]' > "${PROM_TARGETS}/dcgm.json"
-        return 0
-    fi
+        "${IMG_DCGM}" 2>/dev/null || true
 
-    sleep 5
-    if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${C_DCGM}$"; then
-        warn "DCGM exporter crashed — GPU may not support DCGM."
-        echo '[]' > "${PROM_TARGETS}/dcgm.json"
-        docker rm "${C_DCGM}" 2>/dev/null || true
+    sleep 6
+    local dcgm_ip
+    dcgm_ip=$(container_ip "${C_DCGM}" 2>/dev/null)
+    if [ -n "${dcgm_ip}" ] && curl -sf "http://${dcgm_ip}:9400/metrics" >/dev/null 2>&1; then
+        info "DCGM exporter started (custom counters: 30 fields)."
+        docker update --restart unless-stopped "${C_DCGM}" >/dev/null 2>&1
+    else
+        # Custom counters failed — retry with defaults
+        warn "Custom counters failed. Retrying with DCGM defaults..."
+        docker rm -f "${C_DCGM}" 2>/dev/null || true
+        docker run -d \
+            --name "${C_DCGM}" \
+            --restart unless-stopped \
+            --network "${DOCKER_NETWORK}" \
+            --gpus all \
+            --cap-add SYS_ADMIN \
+            "${IMG_DCGM}" 2>/dev/null || true
+        sleep 6
+        dcgm_ip=$(container_ip "${C_DCGM}" 2>/dev/null)
+        if [ -n "${dcgm_ip}" ] && curl -sf "http://${dcgm_ip}:9400/metrics" >/dev/null 2>&1; then
+            info "DCGM exporter started (default counters)."
+        else
+            warn "DCGM exporter crashed — GPU may not support DCGM."
+            echo '[]' > "${PROM_TARGETS}/dcgm.json"
+            docker rm -f "${C_DCGM}" 2>/dev/null || true
+            return 0
+        fi
     fi
 }
 
