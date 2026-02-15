@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-NOSWEB_VERSION="0.02.03"
+NOSWEB_VERSION="0.02.04"
 echo "v${NOSWEB_VERSION}"
 sleep 3
 # =============================================================================
@@ -753,6 +753,7 @@ generate_dashboards() {
     # Inject version into dashboard titles (heredocs are single-quoted, can't expand vars)
     sed -i "s/\"title\": \"GPU Overview\"/\"title\": \"GPU Overview | NOSweb v${NOSWEB_VERSION}\"/" "${GRAFANA_DASH}/gpu-overview.json"
     sed -i "s/\"title\": \"Host Overview\"/\"title\": \"Host Overview | NOSweb v${NOSWEB_VERSION}\"/" "${GRAFANA_DASH}/host-overview.json"
+    sed -i "s/\"title\": \"NOSweb Stack\"/\"title\": \"NOSweb Stack v${NOSWEB_VERSION}\"/" "${GRAFANA_DASH}/gpu-overview.json"
     info "Grafana dashboards generated."
 }
 
@@ -798,7 +799,7 @@ subnet_base() {
 write_targets() {
     local now tmp first ip host group port last_seen status age
     now=$(date +%s)
-    tmp=$(mktemp)
+    tmp=$(mktemp -p "$(dirname "$TARGETS_FILE")")
     first=1
     printf '[' > "$tmp"
     while IFS='|' read -r ip host group port last_seen status _; do
@@ -839,7 +840,7 @@ process_response() {
     # Upsert peer in database
     local now tmp
     now=$(date +%s)
-    tmp=$(mktemp)
+    tmp=$(mktemp -p /data)
     grep -v "^${rip}|" "$PEERS_FILE" > "$tmp" 2>/dev/null || true
     echo "${rip}|${rhost}|${rgroup}|${rport}|${now}|online" >> "$tmp"
     mv "$tmp" "$PEERS_FILE"
@@ -1029,7 +1030,6 @@ ${auth_block}
             # Hide Grafana's "Sign in" button (nginx handles auth, not Grafana)
             proxy_set_header Accept-Encoding "";
             sub_filter_once off;
-            sub_filter_types text/html;
             sub_filter '</head>' '<style>a[href="/login"],button[aria-label="Sign in"]{display:none!important}</style></head>';
         }
 
@@ -1515,3 +1515,92 @@ main() {
 }
 
 main "$@"
+
+# =============================================================================
+# NOSweb — Development Notes
+# =============================================================================
+#
+# PHASE 1 (v0.01.x) — COMPLETE
+#   Single-host monitoring stack. Five containers: netdata, dcgm-exporter,
+#   prometheus, grafana, nginx proxy. GPU Overview dashboard (16 panels),
+#   Host Overview dashboard (4 panels). Throttle detection via bitmask.
+#   Prometheus self-scraping for stack resource monitoring.
+#   DCGM custom counters (30 fields). Anonymous auth disabled.
+#
+# PHASE 2 (v0.02.x) — IN PROGRESS
+#   Fleet discovery via HTTP gossip (replaced failed UDP broadcast approach).
+#   Persistent peer database. Prometheus file_sd for cross-host scraping.
+#   Unauthenticated /metrics/ and /discovery endpoints.
+#   Status: Discovery works. Cross-host scraping targets generated.
+#   TODO: Fleet dashboard panel showing discovered peers.
+#   TODO: Cross-host GPU metrics aggregation in Grafana.
+#
+# PHASE 3 (planned)
+#   Fleet-wide Grafana dashboards: aggregate GPU stats across all peers.
+#   Alerting: thermal throttle notifications, host-down detection.
+#   Group-based filtering in dashboards.
+#
+# DESIGN RULES:
+#   - Single file, no external dependencies
+#   - Zero host installs (containers only)
+#   - set -euo pipefail (strict mode)
+#   - Idempotent: re-run safe, --reset for full wipe
+#   - Config persists in ~/.nosana-webui/
+#   - Heredoc dashboards (single-quoted), version injected via sed
+#   - mktemp on same filesystem as target (avoid cross-device mv)
+#   - Alpine nginx: wget only (no curl), no jq, no socat
+#
+# KNOWN ISSUES:
+#   - /api/live/ws 403 (Grafana live WebSocket — cosmetic)
+#   - nginx proxy_temp buffering warnings on large assets (cosmetic)
+#   - Discovery logs "peer: X online" every 30s even if known (noisy)
+#
+# CAVEATS & GOTCHAS (hard-won lessons — do not re-learn these):
+#   DOCKER:
+#   - UDP broadcast from containers stays on Docker bridge — never reaches
+#     physical LAN. Port-mapping forwards unicast only. This is why we use
+#     HTTP gossip instead of UDP discovery.
+#   - mktemp defaults to /tmp (tmpfs). Docker volumes are a different
+#     filesystem. mv across filesystems fails on Alpine ("can't rename").
+#     Always: mktemp -p /data (or same dir as target file).
+#   - Container names must be unique per Docker host. We prefix NOSweb-.
+#   ALPINE NGINX:
+#   - Has wget, NOT curl. No jq. No socat. No bash (sh only inside container).
+#   - sub_filter_types text/html is the default — adding it explicitly
+#     causes "duplicate MIME type" warning.
+#   - gzip_types * also triggers the duplicate text/html warning.
+#     Use explicit type list instead.
+#   GRAFANA:
+#   - Anonymous auth MUST be disabled or it bypasses nginx basic auth
+#     entirely. We set GF_AUTH_ANONYMOUS_ENABLED=false.
+#   - Heredoc dashboards are single-quoted (no variable expansion).
+#     Version and hostname must be injected via sed AFTER generation.
+#   - Dashboard UIDs must be stable across re-deploys or bookmarks break.
+#     We hardcode: gpu-overview, host-overview.
+#   DCGM:
+#   - CSV counter files cannot contain comments or blank lines — the
+#     parser treats them as field definitions and fails silently.
+#   - Consumer GPUs (GeForce) lack profiling metrics like sm_occupancy,
+#     tensor_active, pcie_replay. These return "N/A" or error.
+#     We only use universally-supported fields (30 total).
+#   - DCGM container needs --cap-add SYS_ADMIN and --gpus all.
+#   BASH:
+#   - set -euo pipefail means ANY unbound variable crashes the script.
+#     Every variable must be defined or use ${VAR:-default}.
+#   - wc -l output has leading whitespace on some systems. Use
+#     grep -c . file instead, and wrap with ${count:-0}.
+#   - Heredocs: single-quoted delimiter ('EOF') = no expansion (safe for
+#     JSON with $). Unquoted delimiter (EOF) = variables expand.
+#
+# CHANGELOG:
+#   0.01.00  Initial Netdata-only deployment
+#   0.01.04  Grafana+Prometheus+DCGM architecture
+#   0.01.10  GPU dashboard: 16 panels, throttle detection, PCIe metrics
+#   0.01.12  DCGM CSV fix, power gauge scaling, fallback mechanism
+#   0.01.16  Throttle redesign (Idle/OK/Throttled!), NOSweb Stack panel
+#   0.02.00  Phase 2: UDP discovery (failed — Docker broadcast limitation)
+#   0.02.01  HTTP gossip migration (partial — missing /discovery endpoint)
+#   0.02.02  /discovery endpoint, version in dashboard titles
+#   0.02.03  Fix DISCOVERY_PORT unbound variable
+#   0.02.04  NOSweb Stack version label, mv cross-device fix, MIME fix
+# =============================================================================
