@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-NOSWEB_VERSION="0.02.02"
+NOSWEB_VERSION="0.02.03"
 echo "v${NOSWEB_VERSION}"
 sleep 3
 # =============================================================================
@@ -1292,7 +1292,6 @@ launch_proxy() {
         -e "NOSWEB_HOSTNAME=${my_hostname}"
         -e "NOSWEB_GROUP=${my_group}"
         -e "NOSWEB_PORT=${DEFAULT_PORT}"
-        -e "NOSWEB_DISC_PORT=${DISCOVERY_PORT}"
         -e "NOSWEB_VERSION=${NOSWEB_VERSION}"
     )
 
