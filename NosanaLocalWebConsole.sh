@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-echo "v0.01.8"
+echo "v0.01.9"
 sleep 3
 # =============================================================================
 # NOSweb — GPU Host Monitoring Stack
@@ -23,6 +23,7 @@ sleep 3
 #   --port PORT           Public port (default: 19999).
 #   --stop                Stop and remove all NOSweb containers.
 #   --status              Show status of all containers.
+#   --reset               Full reset: delete volumes, clear cache, relaunch.
 #   --reset-password      Change stored login credentials.
 #
 # GROUPS:
@@ -106,6 +107,7 @@ PROM_TARGETS="${PROM_DIR}/targets"
 GRAFANA_DIR="${CONFIG_DIR}/grafana"
 GRAFANA_PROV="${GRAFANA_DIR}/provisioning"
 GRAFANA_DASH="${GRAFANA_DIR}/dashboards"
+DCGM_COUNTERS="${CONFIG_DIR}/dcgm-counters.csv"
 
 AUTH_VERSION="2"
 DEFAULT_GROUP="Unassigned"
@@ -276,6 +278,68 @@ create_password() {
 }
 
 # -----------------------------------------------------------------------------
+# Generate DCGM custom counters CSV
+# The default counters are too limited. This adds fan speed, P-State,
+# throttle reasons, PCIe link info, and violation counters.
+# -----------------------------------------------------------------------------
+generate_dcgm_counters() {
+    cat > "${DCGM_COUNTERS}" << 'DCGMEOF'
+# Format: DCGM_FIELD, prometheus_type, help_text
+
+# Core metrics (from defaults)
+DCGM_FI_DEV_SM_CLOCK,              gauge, SM clock frequency (in MHz).
+DCGM_FI_DEV_MEM_CLOCK,             gauge, Memory clock frequency (in MHz).
+DCGM_FI_DEV_GPU_TEMP,              gauge, GPU temperature (in C).
+DCGM_FI_DEV_MEMORY_TEMP,           gauge, Memory temperature (in C).
+DCGM_FI_DEV_POWER_USAGE,           gauge, Power draw (in W).
+DCGM_FI_DEV_TOTAL_ENERGY_CONSUMPTION, counter, Total energy consumption since boot (in mJ).
+DCGM_FI_DEV_GPU_UTIL,              gauge, GPU utilization (in %).
+DCGM_FI_DEV_MEM_COPY_UTIL,         gauge, Memory utilization (in %).
+DCGM_FI_DEV_ENC_UTIL,              gauge, Encoder utilization (in %).
+DCGM_FI_DEV_DEC_UTIL,              gauge, Decoder utilization (in %).
+DCGM_FI_DEV_FB_FREE,               gauge, Framebuffer memory free (in MiB).
+DCGM_FI_DEV_FB_USED,               gauge, Framebuffer memory used (in MiB).
+
+# Fan and thermal
+DCGM_FI_DEV_FAN_SPEED,             gauge, Fan speed (0-100%).
+DCGM_FI_DEV_SLOWDOWN_TEMP,         gauge, Slowdown temperature threshold (in C).
+DCGM_FI_DEV_POWER_MGMT_LIMIT,      gauge, Power management limit (in W).
+
+# Performance state
+DCGM_FI_DEV_PSTATE,                gauge, Performance state (P-State) 0-15. 0=highest.
+
+# Throttle reasons and violations
+DCGM_FI_DEV_CLOCK_THROTTLE_REASONS, gauge, Current clock throttle reasons (bitmask).
+DCGM_FI_DEV_POWER_VIOLATION,       counter, Power throttling duration (in us).
+DCGM_FI_DEV_THERMAL_VIOLATION,     counter, Thermal throttling duration (in us).
+
+# PCIe
+DCGM_FI_DEV_PCIE_TX_THROUGHPUT,    counter, Total PCIe TX bytes.
+DCGM_FI_DEV_PCIE_RX_THROUGHPUT,    counter, Total PCIe RX bytes.
+DCGM_FI_DEV_PCIE_LINK_GEN,         gauge, PCIe current link generation.
+DCGM_FI_DEV_PCIE_LINK_WIDTH,       gauge, PCIe current link width.
+DCGM_FI_DEV_PCIE_REPLAY_COUNTER,   counter, PCIe replay counter.
+
+# Profiling (graceful fallback on unsupported GPUs)
+DCGM_FI_PROF_GR_ENGINE_ACTIVE,     gauge, Ratio of time the graphics engine is active.
+DCGM_FI_PROF_PIPE_TENSOR_ACTIVE,   gauge, Ratio of cycles the tensor pipe is active.
+DCGM_FI_PROF_DRAM_ACTIVE,          gauge, Ratio of cycles the memory interface is active.
+DCGM_FI_PROF_PCIE_TX_BYTES,        gauge, PCIe TX throughput (bytes/s).
+DCGM_FI_PROF_PCIE_RX_BYTES,        gauge, PCIe RX throughput (bytes/s).
+
+# Error tracking
+DCGM_FI_DEV_XID_ERRORS,            gauge, XID errors.
+DCGM_FI_DEV_CORRECTABLE_REMAPPED_ROWS,   counter, Correctable remapped rows.
+DCGM_FI_DEV_UNCORRECTABLE_REMAPPED_ROWS, counter, Uncorrectable remapped rows.
+DCGM_FI_DEV_ROW_REMAP_FAILURE,     gauge, Row remap failure.
+DCGM_FI_DEV_NVLINK_BANDWIDTH_TOTAL, counter, NVLink total bandwidth.
+DCGM_FI_DEV_VGPU_LICENSE_STATUS,   gauge, vGPU license status.
+DCGMEOF
+
+    info "DCGM custom counters generated ($(grep -c '^DCGM' "${DCGM_COUNTERS}") fields)."
+}
+
+# -----------------------------------------------------------------------------
 # Generate Prometheus config
 # -----------------------------------------------------------------------------
 generate_prometheus_config() {
@@ -361,7 +425,7 @@ generate_gpu_dashboard() {
   "tags": ["gpu", "nvidia", "dcgm"],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "10s",
   "time": {"from": "now-1h", "to": "now"},
   "panels": [
@@ -406,8 +470,71 @@ generate_gpu_dashboard() {
         ]}}}
     },
     {
+      "id": 11, "type": "gauge", "title": "Fan Speed",
+      "gridPos": {"h": 6, "w": 6, "x": 0, "y": 6},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "max by (gpu)(DCGM_FI_DEV_FAN_SPEED)", "legendFormat": "GPU {{gpu}}"}],
+      "fieldConfig": {"defaults": {"unit": "percent", "min": 0, "max": 100,
+        "thresholds": {"mode": "absolute", "steps": [
+          {"value": null, "color": "green"}, {"value": 60, "color": "yellow"}, {"value": 85, "color": "red"}
+        ]}}}
+    },
+    {
+      "id": 12, "type": "stat", "title": "P-State",
+      "description": "Performance state 0-15. P0=max performance, P8=idle, P12=low power.",
+      "gridPos": {"h": 6, "w": 6, "x": 6, "y": 6},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "max by (gpu)(DCGM_FI_DEV_PSTATE)", "legendFormat": "GPU {{gpu}}"}],
+      "fieldConfig": {"defaults": {"min": 0, "max": 15, "noValue": "N/A",
+        "mappings": [
+          {"type": "range", "options": {"from": 0, "to": 0, "result": {"text": "P0 MAX", "color": "red"}}},
+          {"type": "range", "options": {"from": 1, "to": 2, "result": {"text": "P${__value.raw}", "color": "orange"}}},
+          {"type": "range", "options": {"from": 3, "to": 7, "result": {"text": "P${__value.raw}", "color": "yellow"}}},
+          {"type": "range", "options": {"from": 8, "to": 15, "result": {"text": "P${__value.raw} idle", "color": "green"}}}
+        ],
+        "thresholds": {"mode": "absolute", "steps": [
+          {"value": null, "color": "green"}
+        ]}}},
+      "options": {"graphMode": "none", "colorMode": "background", "textMode": "auto", "reduceOptions": {"calcs": ["lastNotNull"]}}
+    },
+    {
+      "id": 13, "type": "stat", "title": "Throttle Status",
+      "description": "SW = software power cap throttle. HW = hardware thermal/power throttle. Shows recent events in yellow.",
+      "gridPos": {"h": 6, "w": 6, "x": 12, "y": 6},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"refId": "A", "expr": "max by (gpu)(rate(DCGM_FI_DEV_POWER_VIOLATION[2m]))", "legendFormat": "GPU {{gpu}} SW"},
+        {"refId": "B", "expr": "max by (gpu)(rate(DCGM_FI_DEV_THERMAL_VIOLATION[2m]))", "legendFormat": "GPU {{gpu}} HW"}
+      ],
+      "fieldConfig": {"defaults": {
+        "noValue": "OK",
+        "mappings": [
+          {"type": "range", "options": {"from": 0, "to": 0, "result": {"text": "OK", "color": "green"}}},
+          {"type": "range", "options": {"from": 0.001, "to": 999999999, "result": {"text": "THROTTLE", "color": "red"}}}
+        ],
+        "thresholds": {"mode": "absolute", "steps": [
+          {"value": null, "color": "green"}, {"value": 0.001, "color": "red"}
+        ]}}},
+      "options": {"graphMode": "none", "colorMode": "background", "textMode": "auto", "reduceOptions": {"calcs": ["lastNotNull"]}}
+    },
+    {
+      "id": 14, "type": "stat", "title": "PCIe Link",
+      "description": "Current negotiated PCIe generation and lane width.",
+      "gridPos": {"h": 6, "w": 6, "x": 18, "y": 6},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"refId": "A", "expr": "max by (gpu)(DCGM_FI_DEV_PCIE_LINK_GEN)", "legendFormat": "GPU {{gpu}} Gen"},
+        {"refId": "B", "expr": "max by (gpu)(DCGM_FI_DEV_PCIE_LINK_WIDTH)", "legendFormat": "GPU {{gpu}} x"}
+      ],
+      "fieldConfig": {"defaults": {"noValue": "N/A",
+        "thresholds": {"mode": "absolute", "steps": [
+          {"value": null, "color": "blue"}
+        ]}}},
+      "options": {"graphMode": "none", "colorMode": "value", "textMode": "auto", "reduceOptions": {"calcs": ["lastNotNull"]}}
+    },
+    {
       "id": 5, "type": "timeseries", "title": "GPU Utilization Over Time",
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 6},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [{"refId": "A", "expr": "max by (gpu)(DCGM_FI_DEV_GPU_UTIL)", "legendFormat": "GPU {{gpu}}"}],
       "fieldConfig": {"defaults": {"unit": "percent", "max": 100, "color": {"mode": "palette-classic"},
@@ -415,7 +542,7 @@ generate_gpu_dashboard() {
     },
     {
       "id": 6, "type": "timeseries", "title": "GPU Memory Over Time (MiB)",
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 6},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {"refId": "A", "expr": "max by (gpu)(DCGM_FI_DEV_FB_USED)", "legendFormat": "GPU {{gpu}} Used"},
@@ -426,9 +553,12 @@ generate_gpu_dashboard() {
     },
     {
       "id": 7, "type": "timeseries", "title": "Temperature Over Time",
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 14},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 20},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "targets": [{"refId": "A", "expr": "max by (gpu)(DCGM_FI_DEV_GPU_TEMP)", "legendFormat": "GPU {{gpu}}"}],
+      "targets": [
+        {"refId": "A", "expr": "max by (gpu)(DCGM_FI_DEV_GPU_TEMP)", "legendFormat": "GPU {{gpu}} Core"},
+        {"refId": "B", "expr": "max by (gpu)(DCGM_FI_DEV_MEMORY_TEMP)", "legendFormat": "GPU {{gpu}} Mem"}
+      ],
       "fieldConfig": {"defaults": {"unit": "celsius", "color": {"mode": "palette-classic"},
         "custom": {"lineWidth": 2, "fillOpacity": 10, "spanNulls": true,
           "thresholdsStyle": {"mode": "line"}},
@@ -438,32 +568,67 @@ generate_gpu_dashboard() {
     },
     {
       "id": 8, "type": "timeseries", "title": "Power Draw Over Time",
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 14},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 20},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "targets": [{"refId": "A", "expr": "max by (gpu)(DCGM_FI_DEV_POWER_USAGE)", "legendFormat": "GPU {{gpu}}"}],
+      "targets": [
+        {"refId": "A", "expr": "max by (gpu)(DCGM_FI_DEV_POWER_USAGE)", "legendFormat": "GPU {{gpu}} Draw"},
+        {"refId": "B", "expr": "max by (gpu)(DCGM_FI_DEV_POWER_MGMT_LIMIT)", "legendFormat": "GPU {{gpu}} Limit"}
+      ],
       "fieldConfig": {"defaults": {"unit": "watt", "color": {"mode": "palette-classic"},
-        "custom": {"lineWidth": 2, "fillOpacity": 15, "spanNulls": true}}}
+        "custom": {"lineWidth": 2, "fillOpacity": 15, "spanNulls": true}},
+        "overrides": [{"matcher": {"id": "byRegexp", "options": "Limit"}, "properties": [
+          {"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}},
+          {"id": "custom.fillOpacity", "value": 0}
+        ]}]}
     },
     {
-      "id": 9, "type": "timeseries", "title": "Clock Speeds",
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 22},
+      "id": 9, "type": "timeseries", "title": "Clock Speeds & P-State",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 28},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {"refId": "A", "expr": "max by (gpu)(DCGM_FI_DEV_SM_CLOCK)", "legendFormat": "GPU {{gpu}} SM (MHz)"},
-        {"refId": "B", "expr": "max by (gpu)(DCGM_FI_DEV_MEM_CLOCK)", "legendFormat": "GPU {{gpu}} Mem (MHz)"}
+        {"refId": "B", "expr": "max by (gpu)(DCGM_FI_DEV_MEM_CLOCK)", "legendFormat": "GPU {{gpu}} Mem (MHz)"},
+        {"refId": "C", "expr": "max by (gpu)(DCGM_FI_DEV_PSTATE)", "legendFormat": "GPU {{gpu}} P-State"}
       ],
-      "fieldConfig": {"defaults": {"unit": "rotmhz", "color": {"mode": "palette-classic"},
-        "custom": {"lineWidth": 2, "fillOpacity": 10, "spanNulls": true}}}
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"},
+        "custom": {"lineWidth": 2, "fillOpacity": 10, "spanNulls": true, "axisPlacement": "auto"}},
+        "overrides": [{"matcher": {"id": "byRegexp", "options": "P-State"}, "properties": [
+          {"id": "custom.axisPlacement", "value": "right"},
+          {"id": "custom.fillOpacity", "value": 0},
+          {"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [5, 5]}},
+          {"id": "min", "value": 0},
+          {"id": "max", "value": 15}
+        ]}]}
+    },
+    {
+      "id": 15, "type": "timeseries", "title": "Throttle Violations",
+      "description": "Rate of throttle events. SW = software power cap. HW = hardware thermal. Spikes mean throttling occurred.",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 28},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"refId": "A", "expr": "max by (gpu)(rate(DCGM_FI_DEV_POWER_VIOLATION[2m]))", "legendFormat": "GPU {{gpu}} SW (power)"},
+        {"refId": "B", "expr": "max by (gpu)(rate(DCGM_FI_DEV_THERMAL_VIOLATION[2m]))", "legendFormat": "GPU {{gpu}} HW (thermal)"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "µs/s", "color": {"mode": "palette-classic"},
+        "custom": {"lineWidth": 2, "fillOpacity": 30, "spanNulls": true, "drawStyle": "bars"}}}
     },
     {
       "id": 10, "type": "timeseries", "title": "PCIe Throughput",
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 22},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 36},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
-        {"refId": "A", "expr": "max by (gpu)(DCGM_FI_DEV_PCIE_TX_THROUGHPUT)", "legendFormat": "GPU {{gpu}} TX"},
-        {"refId": "B", "expr": "max by (gpu)(DCGM_FI_DEV_PCIE_RX_THROUGHPUT)", "legendFormat": "GPU {{gpu}} RX"}
+        {"refId": "A", "expr": "max by (gpu)(DCGM_FI_PROF_PCIE_TX_BYTES)", "legendFormat": "GPU {{gpu}} TX"},
+        {"refId": "B", "expr": "max by (gpu)(DCGM_FI_PROF_PCIE_RX_BYTES)", "legendFormat": "GPU {{gpu}} RX"}
       ],
-      "fieldConfig": {"defaults": {"unit": "KBs", "color": {"mode": "palette-classic"},
+      "fieldConfig": {"defaults": {"unit": "Bps", "color": {"mode": "palette-classic"},
+        "custom": {"lineWidth": 2, "fillOpacity": 15, "spanNulls": true}}}
+    },
+    {
+      "id": 16, "type": "timeseries", "title": "Fan Speed Over Time",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 36},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "max by (gpu)(DCGM_FI_DEV_FAN_SPEED)", "legendFormat": "GPU {{gpu}}"}],
+      "fieldConfig": {"defaults": {"unit": "percent", "min": 0, "max": 100, "color": {"mode": "palette-classic"},
         "custom": {"lineWidth": 2, "fillOpacity": 15, "spanNulls": true}}}
     }
   ]
@@ -744,6 +909,7 @@ launch_dcgm() {
         --network "${DOCKER_NETWORK}" \
         --gpus all \
         --cap-add SYS_ADMIN \
+        -v "${DCGM_COUNTERS}:/etc/dcgm-exporter/default-counters.csv:ro" \
         "${IMG_DCGM}"; then
         info "DCGM exporter started."
     else
@@ -923,6 +1089,7 @@ main() {
             --stop)            action="stop"; shift ;;
             --status)          action="status"; shift ;;
             --reset-password)  action="reset-pw"; shift ;;
+            --reset)           action="reset"; shift ;;
             --help|-h)
                 echo "Usage: $0 [OPTIONS]"
                 echo "  --group NAME       Group name (default: Unassigned)"
@@ -930,6 +1097,7 @@ main() {
                 echo "  --port PORT        Public port (default: ${DEFAULT_PORT})"
                 echo "  --stop             Stop all containers"
                 echo "  --status           Show status"
+                echo "  --reset            Full reset (delete volumes, relaunch)"
                 echo "  --reset-password   Change password"
                 exit 0
                 ;;
@@ -947,6 +1115,16 @@ main() {
             docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${C_PROXY}$" && \
                 docker restart "${C_PROXY}" >/dev/null && info "Proxy restarted."
             exit 0
+            ;;
+        reset)
+            step "Full reset: removing containers and data volumes..."
+            cleanup_containers
+            for v in NOSweb-prometheus-data NOSweb-grafana-data netdata-lib netdata-cache; do
+                docker volume rm "${v}" 2>/dev/null && info "Removed volume: ${v}" || true
+            done
+            info "Reset complete. Relaunching..."
+            echo ""
+            action="launch"
             ;;
     esac
 
@@ -970,6 +1148,7 @@ main() {
     fi
 
     echo ""
+    generate_dcgm_counters
     generate_prometheus_config
     generate_grafana_provisioning
     generate_dashboards
