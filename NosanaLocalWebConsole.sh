@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-NOSWEB_VERSION="0.02.05"
+NOSWEB_VERSION="0.02.06"
 echo "v${NOSWEB_VERSION}"
 sleep 3
 # =============================================================================
@@ -992,7 +992,7 @@ process_response() {
     tmp=$(mktemp -p /data)
     grep -v "^${rip}|" "$PEERS_FILE" > "$tmp" 2>/dev/null || true
     echo "${rip}|${rhost}|${rgroup}|${rport}|${now}|online" >> "$tmp"
-    mv "$tmp" "$PEERS_FILE"
+    cat "$tmp" > "$PEERS_FILE" && rm -f "$tmp"
     log "peer: ${rhost} (${rip}) online"
 }
 
@@ -1747,6 +1747,9 @@ main "$@"
 #     grep -c . file instead, and wrap with ${count:-0}.
 #   - Heredocs: single-quoted delimiter ('EOF') = no expansion (safe for
 #     JSON with $). Unquoted delimiter (EOF) = variables expand.
+#   - File-level bind mounts: mv replaces the inode, breaking the mount.
+#     Use cat "$tmp" > "$target" && rm "$tmp" to preserve the inode.
+#     Directory-level mounts are fine with mv (atomic rename).
 #
 # CHANGELOG:
 #   0.01.00  Initial Netdata-only deployment
@@ -1761,4 +1764,5 @@ main "$@"
 #   0.02.04  NOSweb Stack version label, mv cross-device fix, MIME fix
 #   0.02.05  Fleet Overview dashboard: compact GPU table with gauge bars,
 #            15m throttle lookback, host disk usage bar gauge panel
+#   0.02.06  Fix fleet.json always empty — file bind mount inode replaced by mv
 # =============================================================================
