@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-echo "v0.01.13"
+echo "v0.01.14"
 sleep 3
 # =============================================================================
 # NOSweb — GPU Host Monitoring Stack
@@ -405,7 +405,7 @@ generate_gpu_dashboard() {
   "tags": ["gpu", "nvidia", "dcgm"],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 4,
+  "version": 5,
   "refresh": "10s",
   "time": {"from": "now-1h", "to": "now"},
   "panels": [
@@ -461,8 +461,8 @@ generate_gpu_dashboard() {
     },
     {
       "id": 13, "type": "stat", "title": "Throttle Status",
-      "description": "SW = software power cap (bit 0x4). HW = hardware thermal slowdown (bit 0x8).",
-      "gridPos": {"h": 6, "w": 6, "x": 6, "y": 6},
+      "description": "SW = software power cap. HW = hardware thermal slowdown. Shows OK (green) or ACTIVE (red). DCGM bitmask - no timestamps available.",
+      "gridPos": {"h": 6, "w": 12, "x": 6, "y": 6},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {"refId": "A", "expr": "clamp_max(floor(max by (gpu)(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS) / 4) % 2, 1)", "legendFormat": "GPU {{gpu}} SW"},
@@ -477,12 +477,14 @@ generate_gpu_dashboard() {
         "thresholds": {"mode": "absolute", "steps": [
           {"value": null, "color": "green"}, {"value": 1, "color": "red"}
         ]}}},
-      "options": {"graphMode": "none", "colorMode": "background", "textMode": "auto", "reduceOptions": {"calcs": ["lastNotNull"]}}
+      "options": {"graphMode": "none", "colorMode": "value", "textMode": "auto", "orientation": "horizontal",
+        "reduceOptions": {"calcs": ["lastNotNull"]},
+        "text": {"titleSize": 12, "valueSize": 18}}
     },
     {
       "id": 14, "type": "stat", "title": "PCIe Link (peak 24h)",
-      "description": "Highest negotiated PCIe gen and width in last 24 hours. At idle ASPM drops Gen to 1.",
-      "gridPos": {"h": 6, "w": 6, "x": 12, "y": 6},
+      "description": "Highest negotiated PCIe gen and width in last 24 hours.",
+      "gridPos": {"h": 6, "w": 6, "x": 18, "y": 6},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {"refId": "A", "expr": "max by (gpu)(max_over_time(DCGM_FI_DEV_PCIE_LINK_GEN[24h]))", "legendFormat": "GPU {{gpu}} Gen"},
@@ -491,20 +493,6 @@ generate_gpu_dashboard() {
       "fieldConfig": {"defaults": {"decimals": 0, "noValue": "N/A",
         "thresholds": {"mode": "absolute", "steps": [{"value": null, "color": "blue"}]}}},
       "options": {"graphMode": "none", "colorMode": "value", "textMode": "auto", "reduceOptions": {"calcs": ["lastNotNull"]}}
-    },
-    {
-      "id": 17, "type": "gauge", "title": "Encoder / Decoder",
-      "description": "NVENC and NVDEC hardware video units. Active during transcoding or AI video inference.",
-      "gridPos": {"h": 6, "w": 6, "x": 18, "y": 6},
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "targets": [
-        {"refId": "A", "expr": "max by (gpu)(DCGM_FI_DEV_ENC_UTIL)", "legendFormat": "GPU {{gpu}} Enc"},
-        {"refId": "B", "expr": "max by (gpu)(DCGM_FI_DEV_DEC_UTIL)", "legendFormat": "GPU {{gpu}} Dec"}
-      ],
-      "fieldConfig": {"defaults": {"unit": "percent", "decimals": 0, "min": 0, "max": 100,
-        "thresholds": {"mode": "absolute", "steps": [
-          {"value": null, "color": "green"}, {"value": 70, "color": "yellow"}, {"value": 90, "color": "red"}
-        ]}}}
     },
     {
       "id": 5, "type": "timeseries", "title": "GPU Utilization Over Time",
