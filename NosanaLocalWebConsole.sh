@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-echo "v0.01.7"
+echo "v0.01.8"
 sleep 3
 # =============================================================================
 # NOSweb — GPU Host Monitoring Stack
@@ -593,6 +593,12 @@ ${auth_block}
             proxy_http_version 1.1;
             proxy_set_header Upgrade \$http_upgrade;
             proxy_set_header Connection \$connection_upgrade;
+
+            # Hide Grafana's "Sign in" button (nginx handles auth, not Grafana)
+            proxy_set_header Accept-Encoding "";
+            sub_filter_once off;
+            sub_filter_types text/html;
+            sub_filter '</head>' '<style>a[href="/login"],button[aria-label="Sign in"]{display:none!important}</style></head>';
         }
 
         # Netdata at /netdata/ (official subfolder proxy config)
