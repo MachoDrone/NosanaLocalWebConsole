@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-NOSWEB_VERSION="0.02.10"
+NOSWEB_VERSION="0.02.11"
 echo "v${NOSWEB_VERSION}"
 sleep 3
 # =============================================================================
@@ -20,6 +20,7 @@ sleep 3
 #   --group "my-farm"     Assign this host to a named group (default: "Unassigned").
 #                         Only hosts in the same group see each other.
 #                         Saved after first run — no need to repeat on reboot.
+#   --home fleet|gpu|host Set landing dashboard (default: fleet). Saved.
 #   --nologin             No password required (open access).
 #   --port PORT           Public port (default: 19999).
 #   --stop                Stop and remove all NOSweb containers.
@@ -118,6 +119,7 @@ DISCOVERY_SCRIPT="${CONFIG_DIR}/discovery.sh"
 PROXY_ENTRYPOINT="${CONFIG_DIR}/proxy-entrypoint.sh"
 INFO_METRICS="${CONFIG_DIR}/info_metrics"
 WALLET_FILE="${CONFIG_DIR}/.wallet"
+HOME_DASH_FILE="${CONFIG_DIR}/.home_dashboard"
 
 AUTH_VERSION="2"
 DEFAULT_GROUP="Unassigned"
@@ -606,20 +608,20 @@ generate_gpu_dashboard() {
     },
     {
       "id": 13, "type": "stat", "title": "Throttle",
-      "description": "SW=power cap HW=thermal. Idle=GPU sleeping OK=active Throttled!=active+limited",
+      "description": "Power=SW power cap, Heat=HW thermal. Idle=GPU sleeping, OK=active, Throttle!=active+limited",
       "gridPos": {"h": 6, "w": 7, "x": 5, "y": 6},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
-        {"refId": "A", "expr": "clamp_max(floor(max by (gpu)(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS) / 4) % 2, 1) * 2 + (max by (gpu)(DCGM_FI_DEV_PSTATE) < bool 8)", "legendFormat": "GPU {{gpu}} SW"},
-        {"refId": "B", "expr": "clamp_max(floor(max by (gpu)(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS) / 8) % 2, 1) * 2 + (max by (gpu)(DCGM_FI_DEV_PSTATE) < bool 8)", "legendFormat": "GPU {{gpu}} HW"}
+        {"refId": "A", "expr": "clamp_max(floor(max by (gpu)(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS) / 4) % 2, 1) * 2 + (max by (gpu)(DCGM_FI_DEV_PSTATE) < bool 8)", "legendFormat": "GPU {{gpu}} Power"},
+        {"refId": "B", "expr": "clamp_max(floor(max by (gpu)(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS) / 8) % 2, 1) * 2 + (max by (gpu)(DCGM_FI_DEV_PSTATE) < bool 8)", "legendFormat": "GPU {{gpu}} Heat"}
       ],
       "fieldConfig": {"defaults": {
         "decimals": 0, "noValue": "N/A",
         "mappings": [
           {"type": "value", "options": {"0": {"text": "Idle", "color": "#808080"}}},
           {"type": "value", "options": {"1": {"text": "OK", "color": "green"}}},
-          {"type": "value", "options": {"2": {"text": "Throttled!", "color": "red"}}},
-          {"type": "value", "options": {"3": {"text": "Throttled!", "color": "red"}}}
+          {"type": "value", "options": {"2": {"text": "Throttle!", "color": "red"}}},
+          {"type": "value", "options": {"3": {"text": "Throttle!", "color": "red"}}}
         ],
         "thresholds": {"mode": "absolute", "steps": [{"value": null, "color": "#808080"}]}}},
       "options": {"graphMode": "none", "colorMode": "value", "textMode": "auto", "orientation": "horizontal",
@@ -857,7 +859,7 @@ generate_fleet_dashboard() {
     {
       "id": 1, "type": "table", "title": "GPU Fleet Status",
       "description": "One row per GPU. Bus=PCIe peak 24h (grey=idle, dark-green=active, green=optimal Gen4x16+). Throttle=last 15m.",
-      "gridPos": {"h": 12, "w": 24, "x": 0, "y": 0},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 0},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {"refId": "A", "expr": "max by (host, gpu)(DCGM_FI_DEV_GPU_UTIL)", "format": "table", "instant": true},
@@ -1022,7 +1024,7 @@ generate_fleet_dashboard() {
     {
       "id": 2, "type": "table", "title": "Host Disk Usage",
       "description": "Root filesystem usage per host.",
-      "gridPos": {"h": 5, "w": 24, "x": 0, "y": 12},
+      "gridPos": {"h": 4, "w": 24, "x": 0, "y": 8},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {"refId": "A", "expr": "max by (host)(netdata_disk_space_GiB_average{family=\"/\",dimension=\"used\"}) / (max by (host)(netdata_disk_space_GiB_average{family=\"/\",dimension=\"used\"}) + max by (host)(netdata_disk_space_GiB_average{family=\"/\",dimension=\"avail\"})) * 100", "format": "table", "instant": true}
@@ -1556,6 +1558,11 @@ launch_grafana() {
     step "Pulling Grafana..."
     docker pull "${IMG_GRAFANA}"
 
+    # Home dashboard: stored preference or default to fleet-overview
+    local home_dash
+    home_dash=$(cat "${HOME_DASH_FILE}" 2>/dev/null || echo "fleet-overview")
+    [ ! -f "${HOME_DASH_FILE}" ] && echo -n "${home_dash}" > "${HOME_DASH_FILE}"
+
     step "Launching Grafana..."
     docker run -d \
         --name "${C_GRAFANA}" \
@@ -1573,12 +1580,12 @@ launch_grafana() {
         -e GF_USERS_ALLOW_SIGN_UP=false \
         -e GF_SECURITY_ALLOW_EMBEDDING=true \
         -e GF_SECURITY_DISABLE_GRAVATAR=true \
-        -e GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/dashboards/gpu-overview.json \
+        -e "GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/dashboards/${home_dash}.json" \
         -e GF_USERS_DEFAULT_THEME=dark \
         -e GF_HIDE_VERSION=true \
         -e "GF_SERVER_ROOT_URL=http://localhost:${DEFAULT_PORT}/" \
         "${IMG_GRAFANA}" \
-    && info "Grafana started." || { err "Grafana failed."; return 1; }
+    && info "Grafana started (home: ${home_dash})." || { err "Grafana failed."; return 1; }
 
     local ip; ip=$(container_ip "${C_GRAFANA}")
     [ -n "$ip" ] && wait_for_http "http://${ip}:${PORT_GRAFANA}/api/health" "Grafana" 30 || true
@@ -1711,6 +1718,7 @@ main() {
     local port="${DEFAULT_PORT}"
     local action="launch"
     local group_arg=""
+    local home_arg=""
     local -a peer_args=()
 
     while [[ $# -gt 0 ]]; do
@@ -1719,6 +1727,7 @@ main() {
             --nologin)         NOLOGIN=true; shift ;;
             --group)           group_arg="$2"; shift 2 ;;
             --peer)            peer_args+=("$2"); shift 2 ;;
+            --home)            home_arg="$2"; shift 2 ;;
             --stop)            action="stop"; shift ;;
             --status)          action="status"; shift ;;
             --reset-password)  action="reset-pw"; shift ;;
@@ -1727,6 +1736,7 @@ main() {
                 echo "Usage: $0 [OPTIONS]"
                 echo "  --group NAME       Group name (default: Unassigned)"
                 echo "  --peer IP          Cross-subnet peer (repeatable)"
+                echo "  --home DASHBOARD   Home dashboard: fleet, gpu, host (default: fleet)"
                 echo "  --nologin          No login required"
                 echo "  --port PORT        Public port (default: ${DEFAULT_PORT})"
                 echo "  --stop             Stop all containers"
@@ -1772,6 +1782,15 @@ main() {
     setup_group "${group_arg}"
     setup_peers "${peer_args[@]}"
     setup_wallet
+    # Home dashboard preference
+    if [ -n "${home_arg}" ]; then
+        case "${home_arg}" in
+            fleet) echo -n "fleet-overview" > "${HOME_DASH_FILE}" ;;
+            gpu)   echo -n "gpu-overview" > "${HOME_DASH_FILE}" ;;
+            host)  echo -n "host-overview" > "${HOME_DASH_FILE}" ;;
+            *)     warn "Unknown --home value: ${home_arg}. Use: fleet, gpu, host" ;;
+        esac
+    fi
     cleanup_containers
     cleanup_legacy_volumes
     ensure_network
@@ -1949,4 +1968,6 @@ main "$@"
 #   0.02.10  Fleet: PC/GPUid rename+reorder, Bus column (PCIe gen*100+width encoding),
 #            throttle type: OK/Power/Heat/P+H, compact sizing, disk as table.
 #            GPU Overview: PCIe panel uses same combined format and color scheme.
+#   0.02.11  Compact panel sizing (h=8+4), --home fleet|gpu|host flag,
+#            fleet-overview as default landing, throttle labels: Power/Heat.
 # =============================================================================
