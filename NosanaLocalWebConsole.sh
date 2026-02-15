@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-NOSWEB_VERSION="0.02.07"
+NOSWEB_VERSION="0.02.08"
 echo "v${NOSWEB_VERSION}"
 sleep 3
 # =============================================================================
@@ -770,15 +770,18 @@ generate_fleet_dashboard() {
         {"refId": "B", "expr": "max by (host, gpu)(DCGM_FI_DEV_GPU_TEMP)", "format": "table", "instant": true},
         {"refId": "C", "expr": "max by (host, gpu)(DCGM_FI_DEV_POWER_USAGE) / max by (host, gpu)(DCGM_FI_DEV_POWER_MGMT_LIMIT) * 100", "format": "table", "instant": true},
         {"refId": "D", "expr": "max by (host, gpu)(DCGM_FI_DEV_FAN_SPEED)", "format": "table", "instant": true},
-        {"refId": "E", "expr": "max by (host, gpu)(max_over_time(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS[15m])) >= bool 4", "format": "table", "instant": true}
+        {"refId": "E", "expr": "max by (host, gpu)(max_over_time(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS[15m])) >= bool 4", "format": "table", "instant": true},
+        {"refId": "F", "expr": "label_replace(max by (host, gpu, modelName)(DCGM_FI_DEV_GPU_TEMP * 0 + 1), \"model\", \"$1\", \"modelName\", \"(?:NVIDIA )?(?:GeForce )?(.+)\")", "format": "table", "instant": true}
       ],
       "transformations": [
         {"id": "merge", "options": {}},
         {"id": "organize", "options": {
-          "excludeByName": {"Time": true, "Time 1": true, "Time 2": true, "Time 3": true, "Time 4": true, "Time 5": true},
+          "excludeByName": {"Time": true, "Time 1": true, "Time 2": true, "Time 3": true, "Time 4": true, "Time 5": true, "Time 6": true, "modelName": true, "Value #F": true},
+          "indexByName": {"gpu": 0, "host": 1, "model": 2, "Value #A": 3, "Value #B": 4, "Value #C": 5, "Value #D": 6, "Value #E": 7},
           "renameByName": {
             "host": "Host",
             "gpu": "GPU",
+            "model": "Model",
             "Value #A": "Util %",
             "Value #B": "Temp",
             "Value #C": "Power %",
@@ -802,6 +805,13 @@ generate_fleet_dashboard() {
           {
             "matcher": {"id": "byName", "options": "GPU"},
             "properties": [{"id": "custom.width", "value": 50}]
+          },
+          {
+            "matcher": {"id": "byName", "options": "Model"},
+            "properties": [
+              {"id": "custom.width", "value": 130},
+              {"id": "custom.align", "value": "left"}
+            ]
           },
           {
             "matcher": {"id": "byName", "options": "Util %"},
@@ -1769,4 +1779,5 @@ main "$@"
 #            15m throttle lookback, host disk usage bar gauge panel
 #   0.02.06  Fix fleet.json always empty — file bind mount inode replaced by mv
 #   0.02.07  Fix fleet.json permission denied — chmod 644 for Prometheus nobody user
+#   0.02.08  Fleet dashboard: GPU Model column via DCGM modelName label_replace
 # =============================================================================
