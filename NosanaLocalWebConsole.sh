@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-NOSWEB_VERSION="0.02.15"
+NOSWEB_VERSION="0.02.16"
 echo "v${NOSWEB_VERSION}"
 sleep 3
 # =============================================================================
@@ -626,8 +626,8 @@ generate_gpu_dashboard() {
       "gridPos": {"h": 6, "w": 7, "x": 5, "y": 6},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
-        {"refId": "A", "expr": "clamp_max(floor(max by (gpu)(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS) / 4) % 2, 1) * 2 + (max by (gpu)(DCGM_FI_DEV_PSTATE) < bool 8)", "legendFormat": "GPU {{gpu}} Power"},
-        {"refId": "B", "expr": "clamp_max(floor(max by (gpu)(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS) / 8) % 2, 1) * 2 + (max by (gpu)(DCGM_FI_DEV_PSTATE) < bool 8)", "legendFormat": "GPU {{gpu}} Heat"}
+        {"refId": "A", "expr": "clamp_max(clamp_max(floor(max by (gpu)(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS) / 4) % 2, 1) + clamp_max(floor(max by (gpu)(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS) / 128) % 2, 1), 1) * 2 + (max by (gpu)(DCGM_FI_DEV_PSTATE) < bool 8)", "legendFormat": "GPU {{gpu}} Power"},
+        {"refId": "B", "expr": "clamp_max(clamp_max(floor(max by (gpu)(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS) / 8) % 2, 1) + clamp_max(floor(max by (gpu)(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS) / 32) % 2, 1) + clamp_max(floor(max by (gpu)(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS) / 64) % 2, 1), 1) * 2 + (max by (gpu)(DCGM_FI_DEV_PSTATE) < bool 8)", "legendFormat": "GPU {{gpu}} Heat"}
       ],
       "fieldConfig": {"defaults": {
         "decimals": 0, "noValue": "N/A",
@@ -652,7 +652,7 @@ generate_gpu_dashboard() {
       ],
       "fieldConfig": {"defaults": {"decimals": 0, "noValue": "N/A",
         "mappings": [{"type": "value", "options": {
-          "101": {"text": "1.0x1"}, "102": {"text": "1.0x2"}, "104": {"text": "1.0x4"}, "108": {"text": "1.0x8"}, "116": {"text": "1.0x16"},
+          "101": {"text": "waiting"}, "102": {"text": "waiting"}, "104": {"text": "waiting"}, "108": {"text": "waiting"}, "116": {"text": "waiting"},
           "201": {"text": "2.0x1"}, "204": {"text": "2.0x4"}, "208": {"text": "2.0x8"}, "216": {"text": "2.0x16"},
           "301": {"text": "3.0x1"}, "304": {"text": "3.0x4"}, "308": {"text": "3.0x8"}, "316": {"text": "3.0x16"},
           "401": {"text": "4.0x1"}, "404": {"text": "4.0x4"}, "408": {"text": "4.0x8"}, "416": {"text": "4.0x16"},
@@ -660,7 +660,7 @@ generate_gpu_dashboard() {
         }}],
         "thresholds": {"mode": "absolute", "steps": [
           {"value": null, "color": "#555555"},
-          {"value": 102, "color": "dark-green"},
+          {"value": 200, "color": "dark-green"},
           {"value": 416, "color": "green"}
         ]}}},
       "options": {"graphMode": "none", "colorMode": "value", "textMode": "auto", "orientation": "horizontal",
@@ -880,7 +880,7 @@ generate_fleet_dashboard() {
         {"refId": "B", "expr": "max by (host, gpu)(DCGM_FI_DEV_GPU_TEMP)", "format": "table", "instant": true},
         {"refId": "C", "expr": "max by (host, gpu)(DCGM_FI_DEV_POWER_USAGE) / max by (host, gpu)(DCGM_FI_DEV_POWER_MGMT_LIMIT) * 100", "format": "table", "instant": true},
         {"refId": "D", "expr": "max by (host, gpu)(DCGM_FI_DEV_FAN_SPEED)", "format": "table", "instant": true},
-        {"refId": "E", "expr": "clamp_max(floor(max by (host, gpu)(max_over_time(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS[15m])) / 4) % 2, 1) + clamp_max(floor(max by (host, gpu)(max_over_time(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS[15m])) / 8) % 2, 1) * 2", "format": "table", "instant": true},
+        {"refId": "E", "expr": "clamp_max(clamp_max(floor(max by (host, gpu)(max_over_time(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS[15m])) / 4) % 2, 1) + clamp_max(floor(max by (host, gpu)(max_over_time(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS[15m])) / 128) % 2, 1), 1) + clamp_max(clamp_max(floor(max by (host, gpu)(max_over_time(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS[15m])) / 8) % 2, 1) + clamp_max(floor(max by (host, gpu)(max_over_time(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS[15m])) / 32) % 2, 1) + clamp_max(floor(max by (host, gpu)(max_over_time(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS[15m])) / 64) % 2, 1), 1) * 2", "format": "table", "instant": true},
         {"refId": "F", "expr": "label_replace(max by (host, gpu, modelName)(DCGM_FI_DEV_GPU_TEMP * 0 + 1), \"model\", \"$1\", \"modelName\", \"(?:NVIDIA )?(?:GeForce )?(.+)\")", "format": "table", "instant": true},
         {"refId": "G", "expr": "label_replace(max by (host, wallet)(nosweb_host_info), \"wallet_short\", \"$1...\", \"wallet\", \"^(.{5}).*\")", "format": "table", "instant": true},
         {"refId": "H", "expr": "max by (host, gpu)(max_over_time(DCGM_FI_DEV_PCIE_LINK_GEN[24h])) * 100 + max by (host, gpu)(max_over_time(DCGM_FI_DEV_PCIE_LINK_WIDTH[24h]))", "format": "table", "instant": true},
@@ -1284,7 +1284,7 @@ fetch_balances() {
             "$SOLANA_RPC" 2>/dev/null) && break || sleep 2
     done
     if [ -n "$resp" ]; then
-        lamports=$(echo "$resp" | sed -n 's/.*"value" *: *\([0-9]*\).*/\1/p' | head -1)
+        lamports=$(echo "$resp" | grep -o '"value":[0-9]*' | head -1 | grep -o '[0-9]*$')
         [ -n "$lamports" ] && [ "$lamports" -gt 0 ] 2>/dev/null && \
             sol=$(awk "BEGIN{printf \"%.10f\", $lamports/1000000000}")
     fi
@@ -1297,21 +1297,22 @@ fetch_balances() {
             "$SOLANA_RPC" 2>/dev/null) && break || sleep 2
     done
     if [ -n "$resp" ]; then
-        # Extract uiAmount — handles integers, decimals, and scientific notation
+        # Primary: extract uiAmount (works for decimals and integers)
         local raw
-        raw=$(echo "$resp" | sed -n 's/.*"uiAmount" *: *\([0-9][0-9.eE+\-]*\).*/\1/p' | head -1)
-        if [ -n "$raw" ] && [ "$raw" != "null" ] && [ "$raw" != "0" ]; then
+        raw=$(echo "$resp" | grep -o '"uiAmount":[0-9.e+-]*' | head -1 | grep -o '[0-9.e+-]*$')
+        if [ -n "$raw" ] && [ "$raw" != "0" ]; then
             nos=$(awk "BEGIN{printf \"%.6f\", $raw + 0}")
         fi
-        # Fallback: extract raw amount string and divide by 1e6
+        # Fallback: extract raw "amount" string and divide by 1e6
         if [ "$nos" = "0" ] || [ -z "$nos" ]; then
-            raw=$(echo "$resp" | sed -n 's/.*"amount" *: *"\([0-9]*\)".*/\1/p' | head -1)
+            raw=$(echo "$resp" | grep -o '"amount":"[0-9]*"' | head -1 | grep -o '[0-9]*')
             if [ -n "$raw" ] && [ "$raw" != "0" ]; then
                 nos=$(awk "BEGIN{printf \"%.6f\", $raw/1000000}")
             else
                 nos="0"
             fi
         fi
+        log "balance-debug: NOS raw resp contains uiAmount=$(echo "$resp" | grep -c 'uiAmount')"
     fi
 
     # STK: staked NOS via Nosana stake program (getProgramAccounts + memcmp)
@@ -1323,7 +1324,7 @@ fetch_balances() {
     done
     if [ -n "$resp" ]; then
         local stk_raw
-        stk_raw=$(echo "$resp" | sed -n 's/.*"amount" *: *"\([0-9]*\)".*/\1/p' | head -1)
+        stk_raw=$(echo "$resp" | grep -o '"amount":"[0-9]*"' | head -1 | grep -o '[0-9]*')
         [ -n "$stk_raw" ] && [ "$stk_raw" != "0" ] && \
             stk=$(awk "BEGIN{printf \"%.6f\", $stk_raw/1000000}")
     fi
@@ -1353,6 +1354,10 @@ log "mode: HTTP gossip (subnet scan + seed peers)"
 write_targets
 
 last_balance=0
+# Stagger first balance fetch by IP last octet (0-25s) to avoid RPC rate limits
+stagger=$((${MY_IP##*.} % 26))
+log "balance fetch stagger: ${stagger}s"
+sleep "$stagger"
 while true; do
     gossip_round
     now=$(date +%s)
@@ -2119,4 +2124,8 @@ main "$@"
 #   0.02.15  Bus: Gen1="waiting" grey. NOS: 3 decimals. Throttle OK=dark grey.
 #            Temp: dark-green<78/orange<83/red>=83. Fan: dark-green<60/orange<80/red.
 #            Power: orange>80/red>95. NOS RPC: retry+fallback, sed-based parsing.
+#   0.02.16  Fix throttle: check ALL DCGM bits (4,128=power; 8,32,64=thermal).
+#            Fix NOS parsing: revert to grep (Alpine busybox sed incompatible).
+#            Stagger balance fetch by IP to avoid RPC rate limits.
+#            GPU Overview: same throttle+PCIe fixes.
 # =============================================================================
