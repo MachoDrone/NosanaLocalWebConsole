@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-NOSWEB_VERSION="0.02.09"
+NOSWEB_VERSION="0.02.10"
 echo "v${NOSWEB_VERSION}"
 sleep 3
 # =============================================================================
@@ -628,16 +628,24 @@ generate_gpu_dashboard() {
     },
     {
       "id": 14, "type": "stat", "title": "PCIe (peak 24h)",
-      "description": "Highest negotiated PCIe gen and width in last 24h. Low at idle (ASPM).",
+      "description": "Peak negotiated PCIe gen+width in 24h. Grey=idle(ASPM), dark-green=active, green=optimal(Gen4x16+).",
       "gridPos": {"h": 6, "w": 5, "x": 12, "y": 6},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
-        {"refId": "A", "expr": "max by (gpu)(max_over_time(DCGM_FI_DEV_PCIE_LINK_GEN[24h]))", "legendFormat": "GPU {{gpu}} Gen"},
-        {"refId": "B", "expr": "max by (gpu)(max_over_time(DCGM_FI_DEV_PCIE_LINK_WIDTH[24h]))", "legendFormat": "GPU {{gpu}} x"}
+        {"refId": "A", "expr": "max by (gpu)(max_over_time(DCGM_FI_DEV_PCIE_LINK_GEN[24h])) * 100 + max by (gpu)(max_over_time(DCGM_FI_DEV_PCIE_LINK_WIDTH[24h]))", "legendFormat": "GPU {{gpu}}"}
       ],
       "fieldConfig": {"defaults": {"decimals": 0, "noValue": "N/A",
+        "mappings": [{"type": "value", "options": {
+          "101": {"text": "1.0x1"}, "102": {"text": "1.0x2"}, "104": {"text": "1.0x4"}, "108": {"text": "1.0x8"}, "116": {"text": "1.0x16"},
+          "201": {"text": "2.0x1"}, "204": {"text": "2.0x4"}, "208": {"text": "2.0x8"}, "216": {"text": "2.0x16"},
+          "301": {"text": "3.0x1"}, "304": {"text": "3.0x4"}, "308": {"text": "3.0x8"}, "316": {"text": "3.0x16"},
+          "401": {"text": "4.0x1"}, "404": {"text": "4.0x4"}, "408": {"text": "4.0x8"}, "416": {"text": "4.0x16"},
+          "501": {"text": "5.0x1"}, "504": {"text": "5.0x4"}, "508": {"text": "5.0x8"}, "516": {"text": "5.0x16"}
+        }}],
         "thresholds": {"mode": "absolute", "steps": [
-          {"value": null, "color": "dark-green"}, {"value": 2, "color": "green"}
+          {"value": null, "color": "#555555"},
+          {"value": 102, "color": "dark-green"},
+          {"value": 416, "color": "green"}
         ]}}},
       "options": {"graphMode": "none", "colorMode": "value", "textMode": "auto", "orientation": "horizontal",
         "reduceOptions": {"calcs": ["lastNotNull"]},
@@ -848,27 +856,29 @@ generate_fleet_dashboard() {
   "panels": [
     {
       "id": 1, "type": "table", "title": "GPU Fleet Status",
-      "description": "One row per GPU across all discovered hosts. Gauge bars: green/yellow/red. Throttle checks last 15m.",
-      "gridPos": {"h": 18, "w": 24, "x": 0, "y": 0},
+      "description": "One row per GPU. Bus=PCIe peak 24h (grey=idle, dark-green=active, green=optimal Gen4x16+). Throttle=last 15m.",
+      "gridPos": {"h": 12, "w": 24, "x": 0, "y": 0},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {"refId": "A", "expr": "max by (host, gpu)(DCGM_FI_DEV_GPU_UTIL)", "format": "table", "instant": true},
         {"refId": "B", "expr": "max by (host, gpu)(DCGM_FI_DEV_GPU_TEMP)", "format": "table", "instant": true},
         {"refId": "C", "expr": "max by (host, gpu)(DCGM_FI_DEV_POWER_USAGE) / max by (host, gpu)(DCGM_FI_DEV_POWER_MGMT_LIMIT) * 100", "format": "table", "instant": true},
         {"refId": "D", "expr": "max by (host, gpu)(DCGM_FI_DEV_FAN_SPEED)", "format": "table", "instant": true},
-        {"refId": "E", "expr": "max by (host, gpu)(max_over_time(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS[15m])) >= bool 4", "format": "table", "instant": true},
+        {"refId": "E", "expr": "clamp_max(floor(max by (host, gpu)(max_over_time(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS[15m])) / 4) % 2, 1) + clamp_max(floor(max by (host, gpu)(max_over_time(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS[15m])) / 8) % 2, 1) * 2", "format": "table", "instant": true},
         {"refId": "F", "expr": "label_replace(max by (host, gpu, modelName)(DCGM_FI_DEV_GPU_TEMP * 0 + 1), \"model\", \"$1\", \"modelName\", \"(?:NVIDIA )?(?:GeForce )?(.+)\")", "format": "table", "instant": true},
-        {"refId": "G", "expr": "label_replace(max by (host, wallet)(nosweb_host_info), \"wallet_short\", \"$1...\", \"wallet\", \"^(.{5}).*\")", "format": "table", "instant": true}
+        {"refId": "G", "expr": "label_replace(max by (host, wallet)(nosweb_host_info), \"wallet_short\", \"$1...\", \"wallet\", \"^(.{5}).*\")", "format": "table", "instant": true},
+        {"refId": "H", "expr": "max by (host, gpu)(max_over_time(DCGM_FI_DEV_PCIE_LINK_GEN[24h])) * 100 + max by (host, gpu)(max_over_time(DCGM_FI_DEV_PCIE_LINK_WIDTH[24h]))", "format": "table", "instant": true}
       ],
       "transformations": [
         {"id": "merge", "options": {}},
         {"id": "organize", "options": {
-          "excludeByName": {"Time": true, "Time 1": true, "Time 2": true, "Time 3": true, "Time 4": true, "Time 5": true, "Time 6": true, "Time 7": true, "modelName": true, "Value #F": true, "Value #G": true},
-          "indexByName": {"gpu": 0, "host": 1, "model": 2, "Value #A": 3, "Value #B": 4, "Value #C": 5, "Value #D": 6, "Value #E": 7, "wallet_short": 8, "wallet": 9},
+          "excludeByName": {"Time": true, "Time 1": true, "Time 2": true, "Time 3": true, "Time 4": true, "Time 5": true, "Time 6": true, "Time 7": true, "Time 8": true, "modelName": true, "Value #F": true, "Value #G": true},
+          "indexByName": {"host": 0, "gpu": 1, "model": 2, "Value #H": 3, "Value #A": 4, "Value #B": 5, "Value #C": 6, "Value #D": 7, "Value #E": 8, "wallet_short": 9, "wallet": 10},
           "renameByName": {
-            "host": "Host",
-            "gpu": "GPU",
+            "host": "PC",
+            "gpu": "GPUid",
             "model": "Model",
+            "Value #H": "Bus",
             "Value #A": "Util %",
             "Value #B": "Temp",
             "Value #C": "Power %",
@@ -885,21 +895,40 @@ generate_fleet_dashboard() {
         },
         "overrides": [
           {
-            "matcher": {"id": "byName", "options": "Host"},
+            "matcher": {"id": "byName", "options": "PC"},
             "properties": [
-              {"id": "custom.width", "value": 130},
+              {"id": "custom.width", "value": 70},
               {"id": "custom.align", "value": "left"}
             ]
           },
           {
-            "matcher": {"id": "byName", "options": "GPU"},
-            "properties": [{"id": "custom.width", "value": 50}]
+            "matcher": {"id": "byName", "options": "GPUid"},
+            "properties": [{"id": "custom.width", "value": 45}]
           },
           {
             "matcher": {"id": "byName", "options": "Model"},
             "properties": [
-              {"id": "custom.width", "value": 130},
+              {"id": "custom.width", "value": 100},
               {"id": "custom.align", "value": "left"}
+            ]
+          },
+          {
+            "matcher": {"id": "byName", "options": "Bus"},
+            "properties": [
+              {"id": "custom.width", "value": 70},
+              {"id": "custom.cellOptions", "value": {"type": "color-text"}},
+              {"id": "mappings", "value": [{"type": "value", "options": {
+                "101": {"text": "1.0x1"}, "102": {"text": "1.0x2"}, "104": {"text": "1.0x4"}, "108": {"text": "1.0x8"}, "116": {"text": "1.0x16"},
+                "201": {"text": "2.0x1"}, "202": {"text": "2.0x2"}, "204": {"text": "2.0x4"}, "208": {"text": "2.0x8"}, "216": {"text": "2.0x16"},
+                "301": {"text": "3.0x1"}, "302": {"text": "3.0x2"}, "304": {"text": "3.0x4"}, "308": {"text": "3.0x8"}, "316": {"text": "3.0x16"},
+                "401": {"text": "4.0x1"}, "402": {"text": "4.0x2"}, "404": {"text": "4.0x4"}, "408": {"text": "4.0x8"}, "416": {"text": "4.0x16"},
+                "501": {"text": "5.0x1"}, "502": {"text": "5.0x2"}, "504": {"text": "5.0x4"}, "508": {"text": "5.0x8"}, "516": {"text": "5.0x16"}
+              }}]},
+              {"id": "thresholds", "value": {"mode": "absolute", "steps": [
+                {"value": null, "color": "#555555"},
+                {"value": 102, "color": "dark-green"},
+                {"value": 416, "color": "green"}
+              ]}}
             ]
           },
           {
@@ -911,7 +940,7 @@ generate_fleet_dashboard() {
               {"id": "thresholds", "value": {"mode": "absolute", "steps": [
                 {"value": null, "color": "green"}, {"value": 70, "color": "yellow"}, {"value": 90, "color": "red"}
               ]}},
-              {"id": "custom.width", "value": 150}
+              {"id": "custom.width", "value": 120}
             ]
           },
           {
@@ -923,7 +952,7 @@ generate_fleet_dashboard() {
               {"id": "thresholds", "value": {"mode": "absolute", "steps": [
                 {"value": null, "color": "green"}, {"value": 70, "color": "yellow"}, {"value": 85, "color": "red"}
               ]}},
-              {"id": "custom.width", "value": 130}
+              {"id": "custom.width", "value": 100}
             ]
           },
           {
@@ -935,7 +964,7 @@ generate_fleet_dashboard() {
               {"id": "thresholds", "value": {"mode": "absolute", "steps": [
                 {"value": null, "color": "green"}, {"value": 70, "color": "yellow"}, {"value": 90, "color": "red"}
               ]}},
-              {"id": "custom.width", "value": 130}
+              {"id": "custom.width", "value": 100}
             ]
           },
           {
@@ -947,24 +976,28 @@ generate_fleet_dashboard() {
               {"id": "thresholds", "value": {"mode": "absolute", "steps": [
                 {"value": null, "color": "green"}, {"value": 60, "color": "yellow"}, {"value": 85, "color": "red"}
               ]}},
-              {"id": "custom.width", "value": 120}
+              {"id": "custom.width", "value": 90}
             ]
           },
           {
             "matcher": {"id": "byName", "options": "Throttle"},
             "properties": [
               {"id": "mappings", "value": [
-                {"type": "value", "options": {"0": {"text": "", "color": "transparent"}}},
-                {"type": "value", "options": {"1": {"text": "Recent Throttle!", "color": "red"}}}
+                {"type": "value", "options": {
+                  "0": {"text": "OK", "color": "green"},
+                  "1": {"text": "Power Throttle!", "color": "red"},
+                  "2": {"text": "Heat Throttle!", "color": "red"},
+                  "3": {"text": "P+H Throttle!", "color": "red"}
+                }}
               ]},
               {"id": "custom.cellOptions", "value": {"type": "color-text"}},
-              {"id": "custom.width", "value": 100}
+              {"id": "custom.width", "value": 115}
             ]
           },
           {
             "matcher": {"id": "byName", "options": "Explorer"},
             "properties": [
-              {"id": "custom.width", "value": 85},
+              {"id": "custom.width", "value": 70},
               {"id": "custom.align", "value": "left"},
               {"id": "color", "value": {"mode": "fixed", "fixedColor": "#6EA8FE"}},
               {"id": "custom.cellOptions", "value": {"type": "color-text"}},
@@ -983,26 +1016,41 @@ generate_fleet_dashboard() {
         "showHeader": true,
         "cellHeight": "sm",
         "footer": {"show": true, "reducer": ["count"], "countRows": true},
-        "sortBy": [{"displayName": "Host", "desc": false}]
+        "sortBy": [{"displayName": "PC", "desc": false}]
       }
     },
     {
-      "id": 2, "type": "bargauge", "title": "Host Disk Usage",
-      "description": "Root filesystem usage per host. Green<70%, Yellow<90%, Red>=90%.",
-      "gridPos": {"h": 5, "w": 24, "x": 0, "y": 18},
+      "id": 2, "type": "table", "title": "Host Disk Usage",
+      "description": "Root filesystem usage per host.",
+      "gridPos": {"h": 5, "w": 24, "x": 0, "y": 12},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
-        {"refId": "A", "expr": "max by (host)(netdata_disk_space_GiB_average{family=\"/\",dimension=\"used\"}) / (max by (host)(netdata_disk_space_GiB_average{family=\"/\",dimension=\"used\"}) + max by (host)(netdata_disk_space_GiB_average{family=\"/\",dimension=\"avail\"})) * 100", "legendFormat": "{{host}}"}
+        {"refId": "A", "expr": "max by (host)(netdata_disk_space_GiB_average{family=\"/\",dimension=\"used\"}) / (max by (host)(netdata_disk_space_GiB_average{family=\"/\",dimension=\"used\"}) + max by (host)(netdata_disk_space_GiB_average{family=\"/\",dimension=\"avail\"})) * 100", "format": "table", "instant": true}
       ],
-      "fieldConfig": {"defaults": {
-        "unit": "percent", "decimals": 0, "min": 0, "max": 100,
-        "thresholds": {"mode": "absolute", "steps": [
-          {"value": null, "color": "green"}, {"value": 70, "color": "yellow"}, {"value": 90, "color": "red"}
-        ]}
-      }},
-      "options": {"orientation": "horizontal", "displayMode": "gradient", "showUnfilled": true,
-        "minVizWidth": 10, "minVizHeight": 10,
-        "reduceOptions": {"calcs": ["lastNotNull"]}}
+      "transformations": [
+        {"id": "organize", "options": {
+          "excludeByName": {"Time": true},
+          "renameByName": {"host": "PC", "Value": "Disk %"}
+        }}
+      ],
+      "fieldConfig": {
+        "defaults": {"custom": {"align": "center", "filterable": true}},
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "PC"}, "properties": [
+            {"id": "custom.width", "value": 100}, {"id": "custom.align", "value": "left"}
+          ]},
+          {"matcher": {"id": "byName", "options": "Disk %"}, "properties": [
+            {"id": "unit", "value": "percent"}, {"id": "decimals", "value": 0},
+            {"id": "min", "value": 0}, {"id": "max", "value": 100},
+            {"id": "custom.cellOptions", "value": {"type": "gauge", "mode": "gradient"}},
+            {"id": "thresholds", "value": {"mode": "absolute", "steps": [
+              {"value": null, "color": "green"}, {"value": 70, "color": "yellow"}, {"value": 90, "color": "red"}
+            ]}}
+          ]}
+        ]
+      },
+      "options": {"showHeader": true, "cellHeight": "sm",
+        "sortBy": [{"displayName": "PC", "desc": false}]}
     }
   ]
 }
@@ -1898,4 +1946,7 @@ main "$@"
 #   0.02.08  Fleet dashboard: GPU Model column via DCGM modelName label_replace
 #   0.02.09  Wallet detection + Explorer column: Nosana wallet address from keypair,
 #            /metrics/info endpoint, clickable link to explore.nosana.com
+#   0.02.10  Fleet: PC/GPUid rename+reorder, Bus column (PCIe gen*100+width encoding),
+#            throttle type: OK/Power/Heat/P+H, compact sizing, disk as table.
+#            GPU Overview: PCIe panel uses same combined format and color scheme.
 # =============================================================================
