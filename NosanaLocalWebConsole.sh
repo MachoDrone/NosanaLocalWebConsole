@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-echo "v0.01.11"
+echo "v0.01.12"
 sleep 3
 # =============================================================================
 # NOSweb — GPU Host Monitoring Stack
@@ -405,7 +405,7 @@ generate_gpu_dashboard() {
   "tags": ["gpu", "nvidia", "dcgm"],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 2,
+  "version": 3,
   "refresh": "10s",
   "time": {"from": "now-1h", "to": "now"},
   "panels": [
@@ -440,13 +440,13 @@ generate_gpu_dashboard() {
         ]}}}
     },
     {
-      "id": 4, "type": "gauge", "title": "Power Draw",
+      "id": 4, "type": "gauge", "title": "Power (% of Limit)",
       "gridPos": {"h": 6, "w": 6, "x": 18, "y": 0},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "targets": [{"refId": "A", "expr": "max by (gpu)(DCGM_FI_DEV_POWER_USAGE)", "legendFormat": "GPU {{gpu}}"}],
-      "fieldConfig": {"defaults": {"unit": "watt", "decimals": 0, "min": 0,
+      "targets": [{"refId": "A", "expr": "max by (gpu)(DCGM_FI_DEV_POWER_USAGE) / max by (gpu)(DCGM_FI_DEV_POWER_MGMT_LIMIT) * 100", "legendFormat": "GPU {{gpu}}"}],
+      "fieldConfig": {"defaults": {"unit": "percent", "decimals": 0, "min": 0, "max": 100,
         "thresholds": {"mode": "absolute", "steps": [
-          {"value": null, "color": "green"}, {"value": 200, "color": "yellow"}, {"value": 300, "color": "red"}
+          {"value": null, "color": "green"}, {"value": 70, "color": "yellow"}, {"value": 90, "color": "red"}
         ]}}}
     },
     {
@@ -460,57 +460,52 @@ generate_gpu_dashboard() {
         ]}}}
     },
     {
-      "id": 12, "type": "stat", "title": "P-State",
-      "description": "Performance state 0-15. P0=max performance, P8=idle, P12=low power.",
+      "id": 13, "type": "stat", "title": "Throttle Status",
+      "description": "SW = software power cap (bit 0x4). HW = hardware thermal slowdown (bit 0x8). Uses real-time DCGM bitmask.",
       "gridPos": {"h": 6, "w": 6, "x": 6, "y": 6},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "targets": [{"refId": "A", "expr": "max by (gpu)(DCGM_FI_DEV_PSTATE)", "legendFormat": "GPU {{gpu}}"}],
-      "fieldConfig": {"defaults": {"min": 0, "max": 15, "noValue": "N/A",
-        "mappings": [
-          {"type": "range", "options": {"from": 0, "to": 0, "result": {"text": "P0 MAX", "color": "red"}}},
-          {"type": "range", "options": {"from": 1, "to": 2, "result": {"text": "P${__value.raw}", "color": "orange"}}},
-          {"type": "range", "options": {"from": 3, "to": 7, "result": {"text": "P${__value.raw}", "color": "yellow"}}},
-          {"type": "range", "options": {"from": 8, "to": 15, "result": {"text": "P${__value.raw} idle", "color": "green"}}}
-        ],
-        "thresholds": {"mode": "absolute", "steps": [
-          {"value": null, "color": "green"}
-        ]}}},
-      "options": {"graphMode": "none", "colorMode": "background", "textMode": "auto", "reduceOptions": {"calcs": ["lastNotNull"]}}
-    },
-    {
-      "id": 13, "type": "stat", "title": "Throttle Status",
-      "description": "SW = software power cap throttle. HW = hardware thermal/power throttle. Shows recent events in yellow.",
-      "gridPos": {"h": 6, "w": 6, "x": 12, "y": 6},
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
-        {"refId": "A", "expr": "max by (gpu)(rate(DCGM_FI_DEV_POWER_VIOLATION[2m]))", "legendFormat": "GPU {{gpu}} SW"},
-        {"refId": "B", "expr": "max by (gpu)(rate(DCGM_FI_DEV_THERMAL_VIOLATION[2m]))", "legendFormat": "GPU {{gpu}} HW"}
+        {"refId": "A", "expr": "clamp_max(max by (gpu)(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS) / 4 % 2, 1)", "legendFormat": "GPU {{gpu}} SW"},
+        {"refId": "B", "expr": "clamp_max(max by (gpu)(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS) / 8 % 2, 1)", "legendFormat": "GPU {{gpu}} HW"}
       ],
       "fieldConfig": {"defaults": {
         "noValue": "OK",
         "mappings": [
-          {"type": "range", "options": {"from": 0, "to": 0, "result": {"text": "OK", "color": "green"}}},
-          {"type": "range", "options": {"from": 0.001, "to": 999999999, "result": {"text": "THROTTLE", "color": "red"}}}
+          {"type": "value", "options": {"0": {"text": "OK", "color": "green"}}},
+          {"type": "value", "options": {"1": {"text": "ACTIVE", "color": "red"}}}
         ],
         "thresholds": {"mode": "absolute", "steps": [
-          {"value": null, "color": "green"}, {"value": 0.001, "color": "red"}
+          {"value": null, "color": "green"}, {"value": 1, "color": "red"}
         ]}}},
       "options": {"graphMode": "none", "colorMode": "background", "textMode": "auto", "reduceOptions": {"calcs": ["lastNotNull"]}}
     },
     {
       "id": 14, "type": "stat", "title": "PCIe Link",
-      "description": "Current negotiated PCIe generation and lane width.",
-      "gridPos": {"h": 6, "w": 6, "x": 18, "y": 6},
+      "description": "Current negotiated PCIe generation and lane width. Gen drops at idle (ASPM power saving).",
+      "gridPos": {"h": 6, "w": 6, "x": 12, "y": 6},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {"refId": "A", "expr": "max by (gpu)(DCGM_FI_DEV_PCIE_LINK_GEN)", "legendFormat": "GPU {{gpu}} Gen"},
         {"refId": "B", "expr": "max by (gpu)(DCGM_FI_DEV_PCIE_LINK_WIDTH)", "legendFormat": "GPU {{gpu}} x"}
       ],
-      "fieldConfig": {"defaults": {"noValue": "N/A",
+      "fieldConfig": {"defaults": {"decimals": 0, "noValue": "N/A",
         "thresholds": {"mode": "absolute", "steps": [
           {"value": null, "color": "blue"}
         ]}}},
       "options": {"graphMode": "none", "colorMode": "value", "textMode": "auto", "reduceOptions": {"calcs": ["lastNotNull"]}}
+    },
+    {
+      "id": 17, "type": "gauge", "title": "Encoder / Decoder",
+      "gridPos": {"h": 6, "w": 6, "x": 18, "y": 6},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"refId": "A", "expr": "max by (gpu)(DCGM_FI_DEV_ENC_UTIL)", "legendFormat": "GPU {{gpu}} Enc"},
+        {"refId": "B", "expr": "max by (gpu)(DCGM_FI_DEV_DEC_UTIL)", "legendFormat": "GPU {{gpu}} Dec"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "percent", "decimals": 0, "min": 0, "max": 100,
+        "thresholds": {"mode": "absolute", "steps": [
+          {"value": null, "color": "green"}, {"value": 70, "color": "yellow"}, {"value": 90, "color": "red"}
+        ]}}}
     },
     {
       "id": 5, "type": "timeseries", "title": "GPU Utilization Over Time",
@@ -570,7 +565,7 @@ generate_gpu_dashboard() {
         {"refId": "B", "expr": "max by (gpu)(DCGM_FI_DEV_MEM_CLOCK)", "legendFormat": "GPU {{gpu}} Mem (MHz)"},
         {"refId": "C", "expr": "max by (gpu)(DCGM_FI_DEV_PSTATE)", "legendFormat": "GPU {{gpu}} P-State"}
       ],
-      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"},
+      "fieldConfig": {"defaults": {"decimals": 0, "color": {"mode": "palette-classic"},
         "custom": {"lineWidth": 2, "fillOpacity": 10, "spanNulls": true, "axisPlacement": "auto"}},
         "overrides": [{"matcher": {"id": "byRegexp", "options": "P-State"}, "properties": [
           {"id": "custom.axisPlacement", "value": "right"},
@@ -581,16 +576,20 @@ generate_gpu_dashboard() {
         ]}]}
     },
     {
-      "id": 15, "type": "timeseries", "title": "Throttle Violations",
-      "description": "Rate of throttle events. SW = software power cap. HW = hardware thermal. Spikes mean throttling occurred.",
+      "id": 15, "type": "timeseries", "title": "Throttle Events",
+      "description": "SW = software power cap. HW = hardware thermal. Bitmask bits 0x4 and 0x8. Value of 1 = actively throttling.",
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 28},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
-        {"refId": "A", "expr": "max by (gpu)(rate(DCGM_FI_DEV_POWER_VIOLATION[2m]))", "legendFormat": "GPU {{gpu}} SW (power)"},
-        {"refId": "B", "expr": "max by (gpu)(rate(DCGM_FI_DEV_THERMAL_VIOLATION[2m]))", "legendFormat": "GPU {{gpu}} HW (thermal)"}
+        {"refId": "A", "expr": "clamp_max(max by (gpu)(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS) / 4 % 2, 1)", "legendFormat": "GPU {{gpu}} SW (power)"},
+        {"refId": "B", "expr": "clamp_max(max by (gpu)(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS) / 8 % 2, 1)", "legendFormat": "GPU {{gpu}} HW (thermal)"}
       ],
-      "fieldConfig": {"defaults": {"unit": "µs/s", "color": {"mode": "palette-classic"},
-        "custom": {"lineWidth": 2, "fillOpacity": 30, "spanNulls": true, "drawStyle": "bars"}}}
+      "fieldConfig": {"defaults": {"decimals": 0, "min": 0, "max": 1, "color": {"mode": "palette-classic"},
+        "custom": {"lineWidth": 2, "fillOpacity": 50, "spanNulls": true, "drawStyle": "bars"},
+        "mappings": [
+          {"type": "value", "options": {"0": {"text": "OK"}}},
+          {"type": "value", "options": {"1": {"text": "THROTTLE"}}}
+        ]}}
     },
     {
       "id": 10, "type": "timeseries", "title": "PCIe Throughput",
@@ -610,6 +609,21 @@ generate_gpu_dashboard() {
       "targets": [{"refId": "A", "expr": "max by (gpu)(DCGM_FI_DEV_FAN_SPEED)", "legendFormat": "GPU {{gpu}}"}],
       "fieldConfig": {"defaults": {"unit": "percent", "decimals": 0, "min": 0, "max": 100, "color": {"mode": "palette-classic"},
         "custom": {"lineWidth": 2, "fillOpacity": 15, "spanNulls": true}}}
+    },
+    {
+      "id": 18, "type": "timeseries", "title": "PCIe Link Speed Over Time",
+      "description": "PCIe generation and lane width. Drops at idle due to ASPM power saving.",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 44},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"refId": "A", "expr": "max by (gpu)(DCGM_FI_DEV_PCIE_LINK_GEN)", "legendFormat": "GPU {{gpu}} Gen"},
+        {"refId": "B", "expr": "max by (gpu)(DCGM_FI_DEV_PCIE_LINK_WIDTH)", "legendFormat": "GPU {{gpu}} Width"}
+      ],
+      "fieldConfig": {"defaults": {"decimals": 0, "color": {"mode": "palette-classic"},
+        "custom": {"lineWidth": 2, "fillOpacity": 10, "spanNulls": true}},
+        "overrides": [{"matcher": {"id": "byRegexp", "options": "Width"}, "properties": [
+          {"id": "custom.axisPlacement", "value": "right"}
+        ]}]}
     }
   ]
 }
