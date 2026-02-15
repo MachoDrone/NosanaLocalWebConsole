@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-NOSWEB_VERSION="0.02.11"
+NOSWEB_VERSION="0.02.12"
 echo "v${NOSWEB_VERSION}"
 sleep 3
 # =============================================================================
@@ -334,14 +334,13 @@ setup_password() {
 create_password() {
     echo ""
     echo -e "${BOLD}  Set up WebUI login${NC}"
+    echo "  (You may use your Ubuntu login credentials so you don't forget them.)"
     echo ""
-    local default_user
-    default_user=$(whoami)
-    read -rp "  Username [${default_user}]: " input_user
-    local auth_user="${input_user:-${default_user}}"
+    read -rp "  Username: " input_user
+    local auth_user="${input_user}"
+    [ -z "${auth_user}" ] && { err "Username cannot be empty."; create_password; return; }
     echo ""
     echo "  Enter the password you want for the WebUI."
-    echo "  (Tip: use your Ubuntu login password so you don't forget it.)"
     echo ""
     local auth_pass=""
     while true; do
@@ -859,7 +858,7 @@ generate_fleet_dashboard() {
     {
       "id": 1, "type": "table", "title": "GPU Fleet Status",
       "description": "One row per GPU. Bus=PCIe peak 24h (grey=idle, dark-green=active, green=optimal Gen4x16+). Throttle=last 15m.",
-      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 0},
+      "gridPos": {"h": 20, "w": 24, "x": 0, "y": 0},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {"refId": "A", "expr": "max by (host, gpu)(DCGM_FI_DEV_GPU_UTIL)", "format": "table", "instant": true},
@@ -1024,7 +1023,7 @@ generate_fleet_dashboard() {
     {
       "id": 2, "type": "table", "title": "Host Disk Usage",
       "description": "Root filesystem usage per host.",
-      "gridPos": {"h": 4, "w": 24, "x": 0, "y": 8},
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 20},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {"refId": "A", "expr": "max by (host)(netdata_disk_space_GiB_average{family=\"/\",dimension=\"used\"}) / (max by (host)(netdata_disk_space_GiB_average{family=\"/\",dimension=\"used\"}) + max by (host)(netdata_disk_space_GiB_average{family=\"/\",dimension=\"avail\"})) * 100", "format": "table", "instant": true}
@@ -1917,6 +1916,8 @@ main "$@"
 #   - gzip_types * also triggers the duplicate text/html warning.
 #     Use explicit type list instead.
 #   GRAFANA:
+#   - Panel heights are fixed in dashboard JSON — no auto-grow/shrink.
+#     Tables scroll when content exceeds panel height. Set generous h values.
 #   - Anonymous auth MUST be disabled or it bypasses nginx basic auth
 #     entirely. We set GF_AUTH_ANONYMOUS_ENABLED=false.
 #   - Heredoc dashboards are single-quoted (no variable expansion).
@@ -1970,4 +1971,6 @@ main "$@"
 #            GPU Overview: PCIe panel uses same combined format and color scheme.
 #   0.02.11  Compact panel sizing (h=8+4), --home fleet|gpu|host flag,
 #            fleet-overview as default landing, throttle labels: Power/Heat.
+#   0.02.12  Empty username prompt (no default), reworded setup tip,
+#            fleet panel heights: GPU h=20 (~18 rows), disk h=10 (~8 hosts).
 # =============================================================================
