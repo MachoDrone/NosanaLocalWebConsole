@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Usage: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-echo "v0.02.00"
+NOSWEB_VERSION="0.02.02"
+echo "v${NOSWEB_VERSION}"
 sleep 3
 # =============================================================================
 # NOSweb — GPU Host Monitoring Stack
@@ -109,8 +110,7 @@ GRAFANA_PROV="${GRAFANA_DIR}/provisioning"
 GRAFANA_DASH="${GRAFANA_DIR}/dashboards"
 DCGM_COUNTERS="${CONFIG_DIR}/dcgm-counters.csv"
 
-# Discovery
-DISCOVERY_PORT=19900
+# Discovery (HTTP gossip — no UDP needed)
 PEERS_FILE="${CONFIG_DIR}/peers.dat"
 SEED_PEERS_FILE="${CONFIG_DIR}/.seed_peers"
 FLEET_TARGETS="${PROM_TARGETS}/fleet.json"
@@ -243,9 +243,9 @@ setup_peers() {
     # Initialize empty files if they don't exist
     touch "${SEED_PEERS_FILE}" "${PEERS_FILE}"
     [ -f "${FLEET_TARGETS}" ] || echo '[]' > "${FLEET_TARGETS}"
-    local count
-    count=$(grep -c . "${SEED_PEERS_FILE}" 2>/dev/null || echo 0)
-    if [ "${count}" -gt 0 ]; then
+    local count=0
+    [ -s "${SEED_PEERS_FILE}" ] && count=$(grep -c . "${SEED_PEERS_FILE}" 2>/dev/null) || true
+    if [ "${count:-0}" -gt 0 ] 2>/dev/null; then
         info "Seed peers: ${count} (stored in ${SEED_PEERS_FILE})"
     fi
 }
@@ -750,19 +750,23 @@ HOSTEOF
 generate_dashboards() {
     generate_gpu_dashboard
     generate_host_dashboard
+    # Inject version into dashboard titles (heredocs are single-quoted, can't expand vars)
+    sed -i "s/\"title\": \"GPU Overview\"/\"title\": \"GPU Overview | NOSweb v${NOSWEB_VERSION}\"/" "${GRAFANA_DASH}/gpu-overview.json"
+    sed -i "s/\"title\": \"Host Overview\"/\"title\": \"Host Overview | NOSweb v${NOSWEB_VERSION}\"/" "${GRAFANA_DASH}/host-overview.json"
     info "Grafana dashboards generated."
 }
 
 # -----------------------------------------------------------------------------
 # Generate Discovery script (runs inside proxy container)
-# UDP broadcast on LAN + unicast to --peer seeds. Maintains peer database.
+# HTTP gossip — polls peers via /discovery endpoint on port 19999.
+# Scans local /24 subnet for LAN auto-discovery. No UDP, no socat.
 # Peers are never removed — tagged offline after 3 minutes of silence.
 # Only online peers written to Prometheus fleet.json targets.
 # -----------------------------------------------------------------------------
 generate_discovery_script() {
     cat > "${DISCOVERY_SCRIPT}" << 'DISCEOF'
 #!/bin/sh
-# NOSweb Fleet Discovery — runs inside proxy container (Alpine ash)
+# NOSweb Fleet Discovery — HTTP gossip (runs inside proxy container)
 
 PEERS_FILE="/data/peers.dat"
 TARGETS_FILE="/data/targets/fleet.json"
@@ -771,14 +775,24 @@ MY_IP="${NOSWEB_IP}"
 MY_HOST="${NOSWEB_HOSTNAME}"
 MY_GROUP="${NOSWEB_GROUP}"
 MY_PORT="${NOSWEB_PORT:-19999}"
-BCAST_PORT="${NOSWEB_DISC_PORT:-19900}"
 INTERVAL=30
 OFFLINE_AFTER=180
+SCAN_DIR="/tmp/discovery_scan"
 
 log() { echo "[discovery] $*"; }
 
 touch "$PEERS_FILE"
-mkdir -p "$(dirname "$TARGETS_FILE")"
+mkdir -p "$(dirname "$TARGETS_FILE")" "$SCAN_DIR"
+
+# ── Write identity file for nginx to serve at /discovery ──
+cat > /data/discovery.json << IDJSON
+{"host":"${MY_HOST}","ip":"${MY_IP}","group":"${MY_GROUP}","port":${MY_PORT},"version":"${NOSWEB_VERSION:-unknown}"}
+IDJSON
+
+# ── Derive /24 subnet base from own IP ──
+subnet_base() {
+    echo "$MY_IP" | sed 's/\.[0-9]*$//'
+}
 
 # ── Write Prometheus file_sd JSON from peers.dat ──
 write_targets() {
@@ -790,14 +804,12 @@ write_targets() {
     while IFS='|' read -r ip host group port last_seen status _; do
         [ -z "$ip" ] && continue
         [ "$ip" = "$MY_IP" ] && continue
-        # Update status based on age
         age=$((now - last_seen))
         if [ "$age" -gt "$OFFLINE_AFTER" ]; then
             status="offline"
         else
             status="online"
         fi
-        # Only scrape online peers
         if [ "$status" = "online" ]; then
             [ "$first" -eq 0 ] && printf ',' >> "$tmp"
             first=0
@@ -808,67 +820,99 @@ write_targets() {
     mv "$tmp" "$TARGETS_FILE"
 }
 
-# ── Process incoming discovery packet ──
-process_packet() {
-    local pkt="$1"
-    local proto ver host ip group port ts
-    proto=$(echo "$pkt" | cut -d'|' -f1)
-    [ "$proto" != "NOSweb" ] && return
-    ver=$(echo "$pkt" | cut -d'|' -f2)
-    host=$(echo "$pkt" | cut -d'|' -f3)
-    ip=$(echo "$pkt" | cut -d'|' -f4)
-    group=$(echo "$pkt" | cut -d'|' -f5)
-    port=$(echo "$pkt" | cut -d'|' -f6)
-    ts=$(echo "$pkt" | cut -d'|' -f7)
+# ── Process a /discovery JSON response ──
+process_response() {
+    local ip="$1" body="$2"
+    local rhost rip rgroup rport
+    # Parse JSON fields (lightweight — no jq in Alpine)
+    rhost=$(echo "$body" | sed -n 's/.*"host"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+    rip=$(echo "$body" | sed -n 's/.*"ip"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+    rgroup=$(echo "$body" | sed -n 's/.*"group"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+    rport=$(echo "$body" | sed -n 's/.*"port"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p')
+    [ -z "$rhost" ] && return
+    [ -z "$rip" ] && rip="$ip"
+    [ -z "$rport" ] && rport="$MY_PORT"
     # Ignore self
-    [ "$ip" = "$MY_IP" ] && return
+    [ "$rip" = "$MY_IP" ] && return
     # Ignore different group
-    [ "$group" != "$MY_GROUP" ] && return
-    # Update peer in database (replace existing entry for this IP)
+    [ "$rgroup" != "$MY_GROUP" ] && return
+    # Upsert peer in database
     local now tmp
     now=$(date +%s)
     tmp=$(mktemp)
-    grep -v "^${ip}|" "$PEERS_FILE" > "$tmp" 2>/dev/null || true
-    echo "${ip}|${host}|${group}|${port}|${now}|online" >> "$tmp"
+    grep -v "^${rip}|" "$PEERS_FILE" > "$tmp" 2>/dev/null || true
+    echo "${rip}|${rhost}|${rgroup}|${rport}|${now}|online" >> "$tmp"
     mv "$tmp" "$PEERS_FILE"
-    log "peer: ${host} (${ip}) online"
+    log "peer: ${rhost} (${rip}) online"
+}
+
+# ── Probe a single IP via HTTP ──
+probe_ip() {
+    local ip="$1" port="${2:-$MY_PORT}"
+    local outfile="${SCAN_DIR}/${ip}"
+    wget -q -T 1 -O "$outfile" "http://${ip}:${port}/discovery" 2>/dev/null || rm -f "$outfile"
+}
+
+# ── Gossip round: scan subnet + seed peers + known peers ──
+gossip_round() {
+    # Clean previous scan
+    rm -f "${SCAN_DIR}"/*
+
+    local base
+    base=$(subnet_base)
+
+    # Subnet scan: probe all /24 addresses in parallel
+    local i=1
+    while [ "$i" -le 254 ]; do
+        probe_ip "${base}.${i}" &
+        i=$((i + 1))
+    done
+
+    # Also probe seed peers (may be on different subnets)
+    if [ -f "$SEED_FILE" ]; then
+        while IFS= read -r peer; do
+            [ -z "$peer" ] && continue
+            probe_ip "$peer" &
+        done < "$SEED_FILE"
+    fi
+
+    # Also probe known peers from database
+    while IFS='|' read -r ip _ _ port _ _ _; do
+        [ -z "$ip" ] && continue
+        [ "$ip" = "$MY_IP" ] && continue
+        probe_ip "$ip" "$port" &
+    done < "$PEERS_FILE"
+
+    # Wait for all probes to finish (1s timeout each, run in parallel)
+    wait
+
+    # Process responses
+    local changed=0
+    for f in "${SCAN_DIR}"/*; do
+        [ -f "$f" ] || continue
+        local ip body
+        ip=$(basename "$f")
+        body=$(cat "$f")
+        [ -z "$body" ] && continue
+        # Only process if it looks like valid JSON
+        echo "$body" | grep -q '"host"' || continue
+        process_response "$ip" "$body"
+        changed=1
+    done
+
     write_targets
+    [ "$changed" -eq 1 ] && log "targets updated"
 }
 
-# ── Broadcast loop ──
-broadcast_loop() {
-    while true; do
-        local msg="NOSweb|1.0|${MY_HOST}|${MY_IP}|${MY_GROUP}|${MY_PORT}|$(date +%s)"
-        # LAN broadcast
-        echo "$msg" | socat - UDP-DATAGRAM:255.255.255.255:${BCAST_PORT},broadcast,so-broadcast 2>/dev/null || true
-        # Unicast to seed peers
-        if [ -f "$SEED_FILE" ]; then
-            while IFS= read -r peer; do
-                [ -z "$peer" ] && continue
-                echo "$msg" | socat - UDP-SENDTO:${peer}:${BCAST_PORT} 2>/dev/null || true
-            done < "$SEED_FILE"
-        fi
-        write_targets
-        sleep "$INTERVAL"
-    done
-}
-
-# ── Listen loop ──
-listen_loop() {
-    log "listening on UDP ${BCAST_PORT}"
-    socat -u UDP-RECV:${BCAST_PORT},reuseaddr STDOUT 2>/dev/null | while IFS= read -r line; do
-        process_packet "$line"
-    done
-}
-
-# ── Start ──
+# ── Main loop ──
 log "starting: host=${MY_HOST} ip=${MY_IP} group=${MY_GROUP} port=${MY_PORT}"
+log "mode: HTTP gossip (subnet scan + seed peers)"
 write_targets
 
-broadcast_loop &
-listen_loop &
-
-wait
+while true; do
+    gossip_round
+    sleep "$INTERVAL"
+done
 DISCEOF
 
     chmod +x "${DISCOVERY_SCRIPT}"
@@ -877,21 +921,19 @@ DISCEOF
 
 # -----------------------------------------------------------------------------
 # Generate Proxy entrypoint (starts nginx + discovery sidecar)
+# No extra packages needed — wget is built into Alpine nginx.
 # -----------------------------------------------------------------------------
 generate_proxy_entrypoint() {
     cat > "${PROXY_ENTRYPOINT}" << 'ENTRYEOF'
 #!/bin/sh
 # NOSweb Proxy Entrypoint — nginx + fleet discovery in one container
 
-# Install socat for UDP discovery (container-internal, not on host)
-apk add --no-cache socat >/dev/null 2>&1 || echo "[entrypoint] WARN: socat install failed"
-
 # Start nginx using the official entrypoint (background)
 /docker-entrypoint.sh nginx -g 'daemon off;' &
 NGINX_PID=$!
 
 # Give nginx a moment to start
-sleep 1
+sleep 2
 
 # Start discovery sidecar
 if [ -f /data/discovery.sh ]; then
@@ -966,6 +1008,13 @@ ${auth_block}
             proxy_set_header Host \$host;
         }
 
+        # Fleet discovery endpoint — serves host identity JSON (no auth)
+        location = /discovery {
+            auth_basic off;
+            default_type application/json;
+            alias /data/discovery.json;
+        }
+
         # Default: Grafana dashboards
         location / {
             proxy_set_header Host \$host;
@@ -1002,7 +1051,7 @@ ${auth_block}
             proxy_pass http://netdata_backend/\$ndpath\$is_args\$args;
             gzip on;
             gzip_proxied any;
-            gzip_types *;
+            gzip_types text/plain text/css application/json application/javascript text/xml;
         }
 
         # Prometheus at /prometheus/
@@ -1025,9 +1074,8 @@ open_firewall() {
     local public_port="$1"
     if command -v ufw >/dev/null 2>&1; then
         if sudo ufw status 2>/dev/null | grep -q "Status: active"; then
-            step "UFW: allowing port ${public_port}/tcp and ${DISCOVERY_PORT}/udp..."
+            step "UFW: allowing port ${public_port}/tcp..."
             sudo ufw allow "${public_port}"/tcp comment "NOSweb" >/dev/null 2>&1 || true
-            sudo ufw allow "${DISCOVERY_PORT}"/udp comment "NOSweb discovery" >/dev/null 2>&1 || true
             sudo ufw reload >/dev/null 2>&1 || true
             info "UFW configured."
         fi
@@ -1234,7 +1282,6 @@ launch_proxy() {
         --network "${DOCKER_NETWORK}"
         --entrypoint /data/entrypoint.sh
         -p "${DEFAULT_PORT}:80"
-        -p "${DISCOVERY_PORT}:${DISCOVERY_PORT}/udp"
         -v "${NGINX_CONF}:/etc/nginx/nginx.conf:ro"
         -v "${PROXY_ENTRYPOINT}:/data/entrypoint.sh:ro"
         -v "${DISCOVERY_SCRIPT}:/data/discovery.sh:ro"
@@ -1246,6 +1293,7 @@ launch_proxy() {
         -e "NOSWEB_GROUP=${my_group}"
         -e "NOSWEB_PORT=${DEFAULT_PORT}"
         -e "NOSWEB_DISC_PORT=${DISCOVERY_PORT}"
+        -e "NOSWEB_VERSION=${NOSWEB_VERSION}"
     )
 
     [ "${NOLOGIN}" = false ] && [ -f "${HTPASSWD_FILE}" ] && \
@@ -1278,7 +1326,7 @@ launch_proxy() {
     # Verify discovery sidecar
     sleep 2
     if docker logs "${C_PROXY}" 2>&1 | grep -q "\[discovery\] starting"; then
-        info "Fleet discovery active (UDP ${DISCOVERY_PORT})."
+        info "Fleet discovery active (HTTP gossip via /discovery)."
     else
         warn "Discovery sidecar may not have started. Check: docker logs ${C_PROXY}"
     fi
@@ -1450,10 +1498,10 @@ main() {
     fi
     echo ""
     echo -e "  ${BOLD}Group:${NC}       $(cat "${GROUP_FILE}" 2>/dev/null || echo "${DEFAULT_GROUP}")"
-    echo -e "  ${BOLD}Discovery:${NC}   UDP ${DISCOVERY_PORT} (auto-discover LAN peers)"
-    local seed_count
-    seed_count=$(grep -c . "${SEED_PEERS_FILE}" 2>/dev/null || echo 0)
-    [ "${seed_count}" -gt 0 ] && echo -e "  ${BOLD}Seed peers:${NC}  ${seed_count} (cross-subnet)"
+    echo -e "  ${BOLD}Discovery:${NC}   HTTP gossip (auto-discover LAN + seed peers)"
+    local seed_count=0
+    [ -s "${SEED_PEERS_FILE}" ] && seed_count=$(grep -c . "${SEED_PEERS_FILE}" 2>/dev/null) || true
+    [ "${seed_count:-0}" -gt 0 ] 2>/dev/null && echo -e "  ${BOLD}Seed peers:${NC}  ${seed_count} (cross-subnet)"
     echo -e "  ${BOLD}Config:${NC}      ${CONFIG_DIR}/"
     echo -e "  ${BOLD}Stop:${NC}        $0 --stop"
     echo -e "  ${BOLD}Status:${NC}      $0 --status"
@@ -1462,6 +1510,7 @@ main() {
     echo -e "    /netdata/       Raw Netdata dashboard"
     echo -e "    /prometheus/    Prometheus query UI"
     echo -e "    /metrics/       Fleet metrics (no auth)"
+    echo -e "    /discovery      Fleet identity (no auth)"
     echo -e "${BOLD}════════════════════════════════════════════════════════${NC}"
     echo ""
 }
