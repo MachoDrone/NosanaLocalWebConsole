@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-NOSWEB_VERSION="0.02.14"
+NOSWEB_VERSION="0.02.15"
 echo "v${NOSWEB_VERSION}"
 sleep 3
 # =============================================================================
@@ -956,7 +956,7 @@ generate_fleet_dashboard() {
               {"id": "custom.width", "value": 65},
               {"id": "custom.cellOptions", "value": {"type": "color-text"}},
               {"id": "mappings", "value": [{"type": "value", "options": {
-                "101": {"text": "1.0x1"}, "102": {"text": "1.0x2"}, "104": {"text": "1.0x4"}, "108": {"text": "1.0x8"}, "116": {"text": "1.0x16"},
+                "101": {"text": "waiting"}, "102": {"text": "waiting"}, "104": {"text": "waiting"}, "108": {"text": "waiting"}, "116": {"text": "waiting"},
                 "201": {"text": "2.0x1"}, "202": {"text": "2.0x2"}, "204": {"text": "2.0x4"}, "208": {"text": "2.0x8"}, "216": {"text": "2.0x16"},
                 "301": {"text": "3.0x1"}, "302": {"text": "3.0x2"}, "304": {"text": "3.0x4"}, "308": {"text": "3.0x8"}, "316": {"text": "3.0x16"},
                 "401": {"text": "4.0x1"}, "402": {"text": "4.0x2"}, "404": {"text": "4.0x4"}, "408": {"text": "4.0x8"}, "416": {"text": "4.0x16"},
@@ -964,7 +964,7 @@ generate_fleet_dashboard() {
               }}]},
               {"id": "thresholds", "value": {"mode": "absolute", "steps": [
                 {"value": null, "color": "#555555"},
-                {"value": 102, "color": "dark-green"},
+                {"value": 200, "color": "dark-green"},
                 {"value": 416, "color": "green"}
               ]}}
             ]
@@ -976,7 +976,7 @@ generate_fleet_dashboard() {
               {"id": "min", "value": 0}, {"id": "max", "value": 100},
               {"id": "custom.cellOptions", "value": {"type": "gauge", "mode": "gradient"}},
               {"id": "thresholds", "value": {"mode": "absolute", "steps": [
-                {"value": null, "color": "green"}, {"value": 70, "color": "yellow"}, {"value": 90, "color": "red"}
+                {"value": null, "color": "dark-green"}, {"value": 70, "color": "yellow"}, {"value": 90, "color": "red"}
               ]}},
               {"id": "custom.width", "value": 100}
             ]
@@ -988,7 +988,7 @@ generate_fleet_dashboard() {
               {"id": "min", "value": 0}, {"id": "max", "value": 100},
               {"id": "custom.cellOptions", "value": {"type": "gauge", "mode": "gradient"}},
               {"id": "thresholds", "value": {"mode": "absolute", "steps": [
-                {"value": null, "color": "green"}, {"value": 70, "color": "yellow"}, {"value": 85, "color": "red"}
+                {"value": null, "color": "dark-green"}, {"value": 78, "color": "orange"}, {"value": 83, "color": "red"}
               ]}},
               {"id": "custom.width", "value": 80}
             ]
@@ -1000,7 +1000,7 @@ generate_fleet_dashboard() {
               {"id": "min", "value": 0}, {"id": "max", "value": 100},
               {"id": "custom.cellOptions", "value": {"type": "gauge", "mode": "gradient"}},
               {"id": "thresholds", "value": {"mode": "absolute", "steps": [
-                {"value": null, "color": "green"}, {"value": 70, "color": "yellow"}, {"value": 90, "color": "red"}
+                {"value": null, "color": "dark-green"}, {"value": 80, "color": "orange"}, {"value": 95, "color": "red"}
               ]}},
               {"id": "custom.width", "value": 80}
             ]
@@ -1012,7 +1012,7 @@ generate_fleet_dashboard() {
               {"id": "min", "value": 0}, {"id": "max", "value": 100},
               {"id": "custom.cellOptions", "value": {"type": "gauge", "mode": "gradient"}},
               {"id": "thresholds", "value": {"mode": "absolute", "steps": [
-                {"value": null, "color": "green"}, {"value": 60, "color": "yellow"}, {"value": 85, "color": "red"}
+                {"value": null, "color": "dark-green"}, {"value": 60, "color": "orange"}, {"value": 80, "color": "red"}
               ]}},
               {"id": "custom.width", "value": 70}
             ]
@@ -1022,7 +1022,7 @@ generate_fleet_dashboard() {
             "properties": [
               {"id": "mappings", "value": [
                 {"type": "value", "options": {
-                  "0": {"text": "OK", "color": "green"},
+                  "0": {"text": "OK", "color": "#555555"},
                   "1": {"text": "Pwr Throttle!", "color": "red"},
                   "2": {"text": "Heat Throttle!", "color": "red"},
                   "3": {"text": "P+H Throttle!", "color": "red"}
@@ -1039,7 +1039,7 @@ generate_fleet_dashboard() {
               {"id": "min", "value": 0}, {"id": "max", "value": 100},
               {"id": "custom.cellOptions", "value": {"type": "gauge", "mode": "gradient"}},
               {"id": "thresholds", "value": {"mode": "absolute", "steps": [
-                {"value": null, "color": "green"}, {"value": 70, "color": "yellow"}, {"value": 90, "color": "red"}
+                {"value": null, "color": "dark-green"}, {"value": 70, "color": "yellow"}, {"value": 90, "color": "red"}
               ]}},
               {"id": "custom.width", "value": 70}
             ]
@@ -1069,10 +1069,10 @@ generate_fleet_dashboard() {
           {
             "matcher": {"id": "byName", "options": "NOS"},
             "properties": [
-              {"id": "decimals", "value": 6},
+              {"id": "decimals", "value": 3},
               {"id": "color", "value": {"mode": "fixed", "fixedColor": "dark-green"}},
               {"id": "custom.cellOptions", "value": {"type": "color-text"}},
-              {"id": "custom.width", "value": 85}
+              {"id": "custom.width", "value": 75}
             ]
           }
         ]
@@ -1274,38 +1274,58 @@ gossip_round() {
 fetch_balances() {
     [ "$MY_WALLET" = "unknown" ] && return 1
 
-    local sol="0" nos="0" stk="0" resp lamports ui_amount tmp
+    local sol="0" nos="0" stk="0" resp lamports tmp retry
 
-    # SOL balance (lamports → SOL / 1e9)
-    resp=$(wget -q -T 5 -O - \
-        --header='Content-Type: application/json' \
-        --post-data='{"jsonrpc":"2.0","id":1,"method":"getBalance","params":["'"$MY_WALLET"'"]}' \
-        "$SOLANA_RPC" 2>/dev/null) || { log "balance: SOL RPC failed"; return 1; }
-
-    lamports=$(echo "$resp" | grep -o '"value":[0-9]*' | head -1 | grep -o '[0-9]*$')
-    [ -n "$lamports" ] && sol=$(awk "BEGIN{printf \"%.10f\", $lamports/1000000000}")
-
-    # NOS token balance (SPL token, 6 decimals)
-    resp=$(wget -q -T 5 -O - \
-        --header='Content-Type: application/json' \
-        --post-data='{"jsonrpc":"2.0","id":1,"method":"getTokenAccountsByOwner","params":["'"$MY_WALLET"'",{"mint":"'"$NOS_MINT"'"},{"encoding":"jsonParsed"}]}' \
-        "$SOLANA_RPC" 2>/dev/null) || true
-
+    # SOL balance (lamports → SOL / 1e9) — retry up to 2 times
+    for retry in 1 2; do
+        resp=$(wget -q -T 8 -O - \
+            --header='Content-Type: application/json' \
+            --post-data='{"jsonrpc":"2.0","id":1,"method":"getBalance","params":["'"$MY_WALLET"'"]}' \
+            "$SOLANA_RPC" 2>/dev/null) && break || sleep 2
+    done
     if [ -n "$resp" ]; then
-        ui_amount=$(echo "$resp" | grep -o '"uiAmount":[0-9.e+A-Z-]*' | head -1 | grep -o '[0-9.e+-]*$')
-        [ -n "$ui_amount" ] && nos="$ui_amount"
+        lamports=$(echo "$resp" | sed -n 's/.*"value" *: *\([0-9]*\).*/\1/p' | head -1)
+        [ -n "$lamports" ] && [ "$lamports" -gt 0 ] 2>/dev/null && \
+            sol=$(awk "BEGIN{printf \"%.10f\", $lamports/1000000000}")
+    fi
+
+    # NOS token balance (SPL token, 6 decimals) — retry up to 2 times
+    for retry in 1 2; do
+        resp=$(wget -q -T 8 -O - \
+            --header='Content-Type: application/json' \
+            --post-data='{"jsonrpc":"2.0","id":1,"method":"getTokenAccountsByOwner","params":["'"$MY_WALLET"'",{"mint":"'"$NOS_MINT"'"},{"encoding":"jsonParsed"}]}' \
+            "$SOLANA_RPC" 2>/dev/null) && break || sleep 2
+    done
+    if [ -n "$resp" ]; then
+        # Extract uiAmount — handles integers, decimals, and scientific notation
+        local raw
+        raw=$(echo "$resp" | sed -n 's/.*"uiAmount" *: *\([0-9][0-9.eE+\-]*\).*/\1/p' | head -1)
+        if [ -n "$raw" ] && [ "$raw" != "null" ] && [ "$raw" != "0" ]; then
+            nos=$(awk "BEGIN{printf \"%.6f\", $raw + 0}")
+        fi
+        # Fallback: extract raw amount string and divide by 1e6
+        if [ "$nos" = "0" ] || [ -z "$nos" ]; then
+            raw=$(echo "$resp" | sed -n 's/.*"amount" *: *"\([0-9]*\)".*/\1/p' | head -1)
+            if [ -n "$raw" ] && [ "$raw" != "0" ]; then
+                nos=$(awk "BEGIN{printf \"%.6f\", $raw/1000000}")
+            else
+                nos="0"
+            fi
+        fi
     fi
 
     # STK: staked NOS via Nosana stake program (getProgramAccounts + memcmp)
-    resp=$(wget -q -T 8 -O - \
-        --header='Content-Type: application/json' \
-        --post-data='{"jsonrpc":"2.0","id":1,"method":"getProgramAccounts","params":["'"$NOS_STAKE_PROGRAM"'",{"encoding":"jsonParsed","filters":[{"memcmp":{"offset":8,"bytes":"'"$MY_WALLET"'","encoding":"base58"}}]}]}' \
-        "$SOLANA_RPC" 2>/dev/null) || true
-
+    for retry in 1 2; do
+        resp=$(wget -q -T 10 -O - \
+            --header='Content-Type: application/json' \
+            --post-data='{"jsonrpc":"2.0","id":1,"method":"getProgramAccounts","params":["'"$NOS_STAKE_PROGRAM"'",{"encoding":"jsonParsed","filters":[{"memcmp":{"offset":8,"bytes":"'"$MY_WALLET"'","encoding":"base58"}}]}]}' \
+            "$SOLANA_RPC" 2>/dev/null) && break || sleep 2
+    done
     if [ -n "$resp" ]; then
         local stk_raw
-        stk_raw=$(echo "$resp" | grep -o '"amount":"[0-9]*"' | head -1 | grep -o '[0-9]*')
-        [ -n "$stk_raw" ] && stk=$(awk "BEGIN{printf \"%.6f\", $stk_raw/1000000}")
+        stk_raw=$(echo "$resp" | sed -n 's/.*"amount" *: *"\([0-9]*\)".*/\1/p' | head -1)
+        [ -n "$stk_raw" ] && [ "$stk_raw" != "0" ] && \
+            stk=$(awk "BEGIN{printf \"%.6f\", $stk_raw/1000000}")
     fi
 
     # Write metrics (atomic via mktemp+mv, same directory = same filesystem)
@@ -2096,4 +2116,7 @@ main "$@"
 #            Discovery script fetches wallet balances every 5m from mainnet.
 #            SOL: red<0.0065, orange<0.01, green>=0.01.
 #            /metrics/balance endpoint + Prometheus balance scrape jobs.
+#   0.02.15  Bus: Gen1="waiting" grey. NOS: 3 decimals. Throttle OK=dark grey.
+#            Temp: dark-green<78/orange<83/red>=83. Fan: dark-green<60/orange<80/red.
+#            Power: orange>80/red>95. NOS RPC: retry+fallback, sed-based parsing.
 # =============================================================================
