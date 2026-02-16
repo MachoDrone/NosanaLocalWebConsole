@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-NOSWEB_VERSION="0.02.19"
+NOSWEB_VERSION="0.02.20"
 echo "v${NOSWEB_VERSION}"
 sleep 3
 # =============================================================================
@@ -614,7 +614,7 @@ generate_gpu_dashboard() {
     },
     {
       "id": 13, "type": "stat", "title": "Throttle",
-      "description": "Power=SW power cap, Heat=HW thermal. Idle=GPU sleeping, OK=active, Throttle!=active+limited",
+      "description": "Power=SW power cap or HW brake. Heat=thermal slowdown. Idle=sleeping, OK=active no throttle, Throttle!=active+limited. Fleet table shows Pwr Limit(orange) vs Heat(red) detail.",
       "gridPos": {"h": 6, "w": 7, "x": 5, "y": 6},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
@@ -864,7 +864,7 @@ generate_fleet_dashboard() {
   "panels": [
     {
       "id": 1, "type": "table", "title": "GPU Fleet Status",
-      "description": "One row per GPU across fleet. Perf=P-state (P0=max, P8=idle).\\n\\nThrottle (checks every 15m):\\n  ok = no throttle detected\\n  Pwr Throttle! = hitting power cap (usually by design, check nvidia-smi -pl)\\n  Heat Throttle! = thermal slowdown — check airflow, dust, fan spacing\\n  P+H Throttle! = both power+heat — worst case, needs immediate attention\\n\\nSOL/STK/NOS update every 5m via Solana RPC. Footer shows fleet totals.",
+      "description": "One row per GPU across fleet. Perf=P-state (P0=max, P8=idle).\\n\\nThrottle (15m lookback):\\n  ok = no throttle\\n  Pwr Limit (orange) = normal, GPU hitting configured power cap\\n  Heat Throttle! (red) = thermal slowdown, check airflow/dust/spacing\\n  HW Pwr Brake! (red) = PSU/cable issue, needs immediate attention\\n  Combined states shown when multiple throttles active\\n\\nSOL/STK/NOS update every 5m via Solana RPC. Footer shows fleet totals.",
       "gridPos": {"h": 14, "w": 24, "x": 0, "y": 0},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
@@ -872,9 +872,9 @@ generate_fleet_dashboard() {
         {"refId": "B", "expr": "max by (host, gpu)(DCGM_FI_DEV_GPU_TEMP)", "format": "table", "instant": true},
         {"refId": "C", "expr": "max by (host, gpu)(DCGM_FI_DEV_POWER_USAGE) / max by (host, gpu)(DCGM_FI_DEV_POWER_MGMT_LIMIT) * 100", "format": "table", "instant": true},
         {"refId": "D", "expr": "max by (host, gpu)(DCGM_FI_DEV_FAN_SPEED)", "format": "table", "instant": true},
-        {"refId": "E", "expr": "clamp_max(clamp_max(floor(max by (host, gpu)(max_over_time(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS[15m])) / 4) % 2, 1) + clamp_max(floor(max by (host, gpu)(max_over_time(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS[15m])) / 128) % 2, 1), 1) + clamp_max(clamp_max(floor(max by (host, gpu)(max_over_time(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS[15m])) / 8) % 2, 1) + clamp_max(floor(max by (host, gpu)(max_over_time(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS[15m])) / 32) % 2, 1) + clamp_max(floor(max by (host, gpu)(max_over_time(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS[15m])) / 64) % 2, 1), 1) * 2", "format": "table", "instant": true},
+        {"refId": "E", "expr": "clamp_max(floor(max by (host, gpu)(max_over_time(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS[15m])) / 4) % 2, 1) + clamp_max(floor(max by (host, gpu)(max_over_time(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS[15m])) / 128) % 2, 1) * 4 + clamp_max(clamp_max(floor(max by (host, gpu)(max_over_time(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS[15m])) / 8) % 2, 1) + clamp_max(floor(max by (host, gpu)(max_over_time(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS[15m])) / 32) % 2, 1) + clamp_max(floor(max by (host, gpu)(max_over_time(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS[15m])) / 64) % 2, 1), 1) * 2", "format": "table", "instant": true},
         {"refId": "F", "expr": "label_replace(max by (host, gpu, modelName)(DCGM_FI_DEV_GPU_TEMP * 0 + 1), \"model\", \"$1\", \"modelName\", \"(?:NVIDIA )?(?:GeForce )?(.+)\")", "format": "table", "instant": true},
-        {"refId": "G", "expr": "label_replace(max by (host, wallet)(nosweb_host_info), \"wallet_short\", \"$1...\", \"wallet\", \"^(.{5}).*\")", "format": "table", "instant": true},
+        {"refId": "G", "expr": "label_replace(label_replace(max by (host, wallet)(nosweb_host_info), \"wallet_short\", \"$1...\", \"wallet\", \"^(.{5}).*\"), \"gpu\", \"0\", \"\", \"\")", "format": "table", "instant": true},
         {"refId": "H", "expr": "max by (host, gpu)(max_over_time(DCGM_FI_DEV_PCIE_LINK_GEN[24h])) * 100 + max by (host, gpu)(max_over_time(DCGM_FI_DEV_PCIE_LINK_WIDTH[24h]))", "format": "table", "instant": true},
         {"refId": "I", "expr": "max by (host)(netdata_disk_space_GiB_average{family=\"/\",dimension=\"used\"}) / (max by (host)(netdata_disk_space_GiB_average{family=\"/\",dimension=\"used\"}) + max by (host)(netdata_disk_space_GiB_average{family=\"/\",dimension=\"avail\"})) * 100", "format": "table", "instant": true},
         {"refId": "J", "expr": "max by (host)(nosweb_sol_balance)", "format": "table", "instant": true},
@@ -1039,9 +1039,13 @@ generate_fleet_dashboard() {
               {"id": "mappings", "value": [
                 {"type": "value", "options": {
                   "0": {"text": "ok", "color": "#555555"},
-                  "1": {"text": "Pwr Throttle!", "color": "red"},
+                  "1": {"text": "Pwr Limit", "color": "orange"},
                   "2": {"text": "Heat Throttle!", "color": "red"},
-                  "3": {"text": "P+H Throttle!", "color": "red"}
+                  "3": {"text": "Heat+Pwr!", "color": "red"},
+                  "4": {"text": "HW Pwr Brake!", "color": "red"},
+                  "5": {"text": "HW Brake+Pwr!", "color": "red"},
+                  "6": {"text": "HW Brake+Heat!", "color": "red"},
+                  "7": {"text": "HW Brake+Heat+Pwr!", "color": "red"}
                 }}
               ]},
               {"id": "custom.cellOptions", "value": {"type": "color-text"}},
@@ -1092,7 +1096,7 @@ generate_fleet_dashboard() {
           {
             "matcher": {"id": "byName", "options": "NOS"},
             "properties": [
-              {"id": "decimals", "value": 3},
+              {"id": "decimals", "value": 0},
               {"id": "custom.cellOptions", "value": {"type": "color-text"}},
               {"id": "mappings", "value": [
                 {"type": "value", "options": {"0": {"text": "waiting", "color": "#555555"}}}
@@ -1106,7 +1110,7 @@ generate_fleet_dashboard() {
       "options": {
         "showHeader": true,
         "cellHeight": "sm",
-        "footer": {"show": true, "reducer": ["sum"], "fields": ["SOL", "STK", "NOS"], "countRows": false},
+        "footer": {"show": true, "reducer": ["sum"], "fields": ["SOL", "STK", "NOS"], "countRows": true},
         "sortBy": [{"displayName": "PC", "desc": false}]
       }
     }
@@ -2191,4 +2195,7 @@ main "$@"
 #            Gauges: basic mode (solid color, shorter bars at fixed widths).
 #   0.02.19  Perf column (P-state P0-P12) after Bus. Footer: sum SOL/STK/NOS.
 #            Info bubble: operator throttle guidance. Process col deferred (needs sidecar).
+#   0.02.20  Pwr Limit=orange (normal), Heat/HW Brake=red (needs attention).
+#            Explorer shows only on GPUid 0 (no repeats per host).
+#            Footer: countRows + crypto sums. NOS: 0 decimals.
 # =============================================================================
