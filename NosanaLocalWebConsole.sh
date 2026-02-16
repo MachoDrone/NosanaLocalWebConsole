@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-NOSWEB_VERSION="0.02.27"
+NOSWEB_VERSION="0.02.28"
 echo "v${NOSWEB_VERSION}"
 sleep 3
 # =============================================================================
@@ -121,6 +121,7 @@ INFO_METRICS="${CONFIG_DIR}/info_metrics"
 WALLET_FILE="${CONFIG_DIR}/.wallet"
 GPU_WALLETS_FILE="${CONFIG_DIR}/gpu_wallets"
 STK_CACHE_FILE="${CONFIG_DIR}/stk_cache"
+EVENTS_FILE="${CONFIG_DIR}/events.csv"
 SCANNER_PID_FILE="${CONFIG_DIR}/.wallet_scanner.pid"
 HOME_DASH_FILE="${CONFIG_DIR}/.home_dashboard"
 
@@ -250,6 +251,7 @@ setup_peers() {
     # Initialize empty files if they don't exist
     touch "${SEED_PEERS_FILE}" "${PEERS_FILE}"
     [ -f "${FLEET_TARGETS}" ] || echo '[]' > "${FLEET_TARGETS}"
+    [ -f "${PROM_TARGETS}/events.prom" ] || echo '# empty' > "${PROM_TARGETS}/events.prom"
     local count=0
     [ -s "${SEED_PEERS_FILE}" ] && count=$(grep -c . "${SEED_PEERS_FILE}" 2>/dev/null) || true
     if [ "${count:-0}" -gt 0 ] 2>/dev/null; then
@@ -575,6 +577,21 @@ scrape_configs:
     scrape_interval: 60s
     static_configs:
       - targets: ['${C_PROXY}:80']
+
+  - job_name: 'events'
+    metrics_path: '/metrics/events'
+    honor_labels: true
+    scrape_interval: 30s
+    static_configs:
+      - targets: ['${C_PROXY}:80']
+
+  - job_name: 'events-fleet'
+    metrics_path: '/metrics/events'
+    honor_labels: true
+    scrape_interval: 30s
+    file_sd_configs:
+      - files: ['/etc/prometheus/targets/fleet.json']
+        refresh_interval: 30s
 PROMEOF
 
     # Phase 1: local targets (container names on Docker network)
@@ -714,7 +731,7 @@ generate_gpu_dashboard() {
     {
       "id": 14, "type": "stat", "title": "PCIe (peak 24h)",
       "description": "Peak negotiated PCIe gen+width in 24h. Grey=idle(ASPM), dark-green=active, green=optimal(Gen4x16+).",
-      "gridPos": {"h": 6, "w": 5, "x": 12, "y": 6},
+      "gridPos": {"h": 6, "w": 12, "x": 12, "y": 6},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {"refId": "A", "expr": "max by (gpu)(max_over_time(DCGM_FI_DEV_PCIE_LINK_GEN[24h])) * 100 + max by (gpu)(max_over_time(DCGM_FI_DEV_PCIE_LINK_WIDTH[24h]))", "legendFormat": "GPU {{gpu}}"}
@@ -735,26 +752,6 @@ generate_gpu_dashboard() {
       "options": {"graphMode": "none", "colorMode": "value", "textMode": "auto", "orientation": "horizontal",
         "reduceOptions": {"calcs": ["lastNotNull"]},
         "text": {"titleSize": 11, "valueSize": 14}}
-    },
-    {
-      "id": 19, "type": "stat", "title": "NOSweb Stack",
-      "description": "Monitoring overhead: RAM from Prometheus+Grafana process metrics. Full stack est. ~350-500MB total (includes Netdata, DCGM, nginx).",
-      "gridPos": {"h": 6, "w": 7, "x": 17, "y": 6},
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "targets": [
-        {"refId": "A", "expr": "sum(process_resident_memory_bytes{job=~\"prometheus|grafana\"}) / 1024 / 1024", "legendFormat": "Prom+Graf MB"},
-        {"refId": "B", "expr": "sum(rate(process_cpu_seconds_total{job=~\"prometheus|grafana\"}[2m])) * 100", "legendFormat": "CPU %"}
-      ],
-      "fieldConfig": {"defaults": {"decimals": 0,
-        "thresholds": {"mode": "absolute", "steps": [
-          {"value": null, "color": "green"}, {"value": 300, "color": "yellow"}, {"value": 600, "color": "red"}
-        ]}},
-        "overrides": [
-          {"matcher": {"id": "byName", "options": "Prom+Graf MB"}, "properties": [{"id": "unit", "value": "decmbytes"}]},
-          {"matcher": {"id": "byName", "options": "CPU %"}, "properties": [{"id": "unit", "value": "percent"}, {"id": "decimals", "value": 1}]}
-        ]},
-      "options": {"graphMode": "area", "colorMode": "value", "textMode": "auto",
-        "reduceOptions": {"calcs": ["lastNotNull"]}}
     },
     {
       "id": 5, "type": "timeseries", "title": "GPU Utilization Over Time",
@@ -920,6 +917,30 @@ generate_host_dashboard() {
       ],
       "fieldConfig": {"defaults": {"unit": "KiBs", "decimals": 0, "color": {"mode": "palette-classic"},
         "custom": {"lineWidth": 2, "fillOpacity": 15, "spanNulls": true}}}
+    },
+    {
+      "id": 5, "type": "stat", "title": "NOSweb Stack",
+      "description": "Monitoring stack overhead. RAM/CPU: Prometheus+Grafana processes. TSDB: Prometheus storage on disk (15d retention). Net: Prometheus HTTP scrape traffic.",
+      "gridPos": {"h": 6, "w": 24, "x": 0, "y": 16},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"refId": "A", "expr": "sum(process_resident_memory_bytes{job=~\"prometheus|grafana\"}) / 1024 / 1024", "legendFormat": "RAM"},
+        {"refId": "B", "expr": "sum(rate(process_cpu_seconds_total{job=~\"prometheus|grafana\"}[2m])) * 100", "legendFormat": "CPU"},
+        {"refId": "C", "expr": "prometheus_tsdb_storage_size_bytes / 1024 / 1024", "legendFormat": "TSDB"},
+        {"refId": "D", "expr": "sum(rate(prometheus_http_response_size_bytes_sum[5m]))", "legendFormat": "Net Out"}
+      ],
+      "fieldConfig": {"defaults": {"decimals": 0,
+        "thresholds": {"mode": "absolute", "steps": [
+          {"value": null, "color": "green"}, {"value": 300, "color": "yellow"}, {"value": 600, "color": "red"}
+        ]}},
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "RAM"}, "properties": [{"id": "unit", "value": "decmbytes"}]},
+          {"matcher": {"id": "byName", "options": "CPU"}, "properties": [{"id": "unit", "value": "percent"}, {"id": "decimals", "value": 1}]},
+          {"matcher": {"id": "byName", "options": "TSDB"}, "properties": [{"id": "unit", "value": "decmbytes"}, {"id": "thresholds", "value": {"mode": "absolute", "steps": [{"value": null, "color": "green"}, {"value": 500, "color": "yellow"}, {"value": 1000, "color": "red"}]}}]},
+          {"matcher": {"id": "byName", "options": "Net Out"}, "properties": [{"id": "unit", "value": "Bps"}, {"id": "thresholds", "value": {"mode": "absolute", "steps": [{"value": null, "color": "green"}, {"value": 102400, "color": "yellow"}, {"value": 1048576, "color": "red"}]}}]}
+        ]},
+      "options": {"graphMode": "area", "colorMode": "value", "textMode": "auto",
+        "reduceOptions": {"calcs": ["lastNotNull"]}}
     }
   ]
 }
@@ -957,9 +978,34 @@ generate_fleet_dashboard() {
   },
   "panels": [
     {
+      "id": 3, "type": "stat", "title": "NOSweb Stack",
+      "description": "Monitoring stack overhead. RAM/CPU: Prometheus+Grafana. TSDB: Prometheus storage (15d retention). Net: scrape traffic.",
+      "gridPos": {"h": 4, "w": 24, "x": 0, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"refId": "A", "expr": "sum(process_resident_memory_bytes{job=~\"prometheus|grafana\"}) / 1024 / 1024", "legendFormat": "RAM"},
+        {"refId": "B", "expr": "sum(rate(process_cpu_seconds_total{job=~\"prometheus|grafana\"}[2m])) * 100", "legendFormat": "CPU"},
+        {"refId": "C", "expr": "prometheus_tsdb_storage_size_bytes / 1024 / 1024", "legendFormat": "TSDB"},
+        {"refId": "D", "expr": "sum(rate(prometheus_http_response_size_bytes_sum[5m]))", "legendFormat": "Net Out"}
+      ],
+      "fieldConfig": {"defaults": {"decimals": 0,
+        "thresholds": {"mode": "absolute", "steps": [
+          {"value": null, "color": "green"}, {"value": 300, "color": "yellow"}, {"value": 600, "color": "red"}
+        ]}},
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "RAM"}, "properties": [{"id": "unit", "value": "decmbytes"}]},
+          {"matcher": {"id": "byName", "options": "CPU"}, "properties": [{"id": "unit", "value": "percent"}, {"id": "decimals", "value": 1}]},
+          {"matcher": {"id": "byName", "options": "TSDB"}, "properties": [{"id": "unit", "value": "decmbytes"}, {"id": "thresholds", "value": {"mode": "absolute", "steps": [{"value": null, "color": "green"}, {"value": 500, "color": "yellow"}, {"value": 1000, "color": "red"}]}}]},
+          {"matcher": {"id": "byName", "options": "Net Out"}, "properties": [{"id": "unit", "value": "Bps"}, {"id": "thresholds", "value": {"mode": "absolute", "steps": [{"value": null, "color": "green"}, {"value": 102400, "color": "yellow"}, {"value": 1048576, "color": "red"}]}}]}
+        ]},
+      "options": {"graphMode": "none", "colorMode": "value", "textMode": "auto", "orientation": "horizontal",
+        "reduceOptions": {"calcs": ["lastNotNull"]},
+        "text": {"titleSize": 10, "valueSize": 16}}
+    },
+    {
       "id": 1, "type": "table", "title": "GPU Fleet Status",
-      "description": "One row per GPU across fleet. Perf=P-state (P0=max, P8=idle).\\n\\nThrottle (lookback controlled by dropdown above):\\n  ok = no throttle\\n  Pwr Limit (orange) = normal, GPU hitting configured power cap\\n  Heat Throttle! (red) = thermal slowdown, check airflow/dust/spacing\\n  HW Pwr Brake! (red) = PSU/cable issue, needs immediate attention\\n  Combined states shown when multiple throttles active\\n  Set dropdown to 5m to clear old events quickly.\\n\\nSOL/STK/NOS update every 5m via Solana RPC. Footer shows fleet totals.",
-      "gridPos": {"h": 14, "w": 24, "x": 0, "y": 0},
+      "description": "One row per GPU across fleet. Perf=P-state (P0=max, P8=idle).\\n\\nThrottle (lookback controlled by dropdown above):\\n  ok = no throttle\\n  Pwr Limit (orange) = normal, GPU hitting configured power cap\\n  Heat Throttle! (red) = thermal slowdown, check airflow/dust/spacing\\n  HW Pwr Brake! (red) = PSU/cable issue, needs immediate attention\\n  Combined states shown when multiple throttles active\\n  Set dropdown to 1m to clear old events quickly.\\n\\nSOL/STK/NOS update every 5m via Solana RPC. Footer shows fleet totals.",
+      "gridPos": {"h": 14, "w": 24, "x": 0, "y": 4},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {"refId": "A", "expr": "max by (host, gpu)(DCGM_FI_DEV_GPU_UTIL)", "format": "table", "instant": true},
@@ -1207,49 +1253,108 @@ generate_fleet_dashboard() {
         "footer": {"show": true, "reducer": ["sum"], "fields": ["SOL", "STK", "NOS"], "countRows": true},
         "sortBy": [{"displayName": "PC", "desc": false}]
       }
-    },
-    {
-      "id": 2, "type": "timeseries", "title": "Fleet Event Log",
-      "description": "Throttle events over time per GPU.\\nPower = SW power cap or HW brake. Heat = thermal slowdown.\\nValue 1 = actively throttling during this interval.",
-      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 14},
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "targets": [
-        {"refId": "A", "expr": "clamp_max(floor(max by (host, gpu)(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS) / 4) % 2 + floor(max by (host, gpu)(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS) / 128) % 2, 1)", "legendFormat": "{{host}} GPU{{gpu}} Power"},
-        {"refId": "B", "expr": "clamp_max(floor(max by (host, gpu)(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS) / 8) % 2 + floor(max by (host, gpu)(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS) / 32) % 2 + floor(max by (host, gpu)(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS) / 64) % 2, 1)", "legendFormat": "{{host}} GPU{{gpu}} Heat"}
-      ],
-      "fieldConfig": {"defaults": {"decimals": 0, "min": 0, "max": 1, "noValue": "0",
-        "color": {"mode": "palette-classic"},
-        "custom": {"lineWidth": 1, "fillOpacity": 40, "spanNulls": true, "drawStyle": "bars", "stacking": {"mode": "none"},
-          "hideFrom": {"tooltip": false, "viz": false, "legend": false},
-          "thresholdsStyle": {"mode": "off"}
-        },
-        "thresholds": {"mode": "absolute", "steps": [{"value": null, "color": "transparent"}, {"value": 1, "color": "red"}]}
-      },
-        "overrides": [
-          {"matcher": {"id": "byRegexp", "options": "Power"}, "properties": [
-            {"id": "color", "value": {"mode": "fixed", "fixedColor": "orange"}}
-          ]},
-          {"matcher": {"id": "byRegexp", "options": "Heat"}, "properties": [
-            {"id": "color", "value": {"mode": "fixed", "fixedColor": "red"}}
-          ]}
-        ]
-      },
-      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "list", "placement": "bottom", "calcs": []}}
     }
   ]
 }
 FLEETEOF
 }
 
+generate_event_log_dashboard() {
+    cat > "${GRAFANA_DASH}/event-log.json" << 'EVENTEOF'
+{
+  "uid": "event-log",
+  "title": "Fleet Event Log",
+  "description": "Timestamped event log — throttle events with start, stop, duration per GPU",
+  "tags": ["fleet", "events", "throttle"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-24h", "to": "now"},
+  "panels": [
+    {
+      "id": 1, "type": "table", "title": "Event Log",
+      "description": "Throttle events detected by NOSweb. Export via Inspect > Data > Download CSV.",
+      "gridPos": {"h": 22, "w": 24, "x": 0, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"refId": "A", "expr": "nosweb_event", "format": "table", "instant": true}
+      ],
+      "transformations": [
+        {"id": "organize", "options": {
+          "excludeByName": {"Time": true, "__name__": true, "instance": true, "job": true},
+          "indexByName": {"pc": 0, "gpuid": 1, "event": 2, "started": 3, "ended": 4, "duration": 5, "status": 6, "Value": 7},
+          "renameByName": {
+            "pc": "PC",
+            "gpuid": "GPUid",
+            "event": "Event",
+            "started": "Started",
+            "ended": "Ended",
+            "duration": "Duration",
+            "status": "Status",
+            "Value": "sort_ts"
+          }
+        }}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {"align": "left", "filterable": true}
+        },
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "sort_ts"}, "properties": [{"id": "custom.hidden", "value": true}]},
+          {"matcher": {"id": "byName", "options": "PC"}, "properties": [{"id": "custom.width", "value": 80}]},
+          {"matcher": {"id": "byName", "options": "GPUid"}, "properties": [{"id": "custom.width", "value": 55}, {"id": "custom.align", "value": "center"}]},
+          {
+            "matcher": {"id": "byName", "options": "Event"},
+            "properties": [
+              {"id": "custom.width", "value": 110},
+              {"id": "custom.cellOptions", "value": {"type": "color-text"}},
+              {"id": "mappings", "value": [{"type": "value", "options": {
+                "Pwr Limit": {"color": "orange"},
+                "Heat": {"color": "red"},
+                "HW Brake": {"color": "red"}
+              }}]}
+            ]
+          },
+          {"matcher": {"id": "byName", "options": "Started"}, "properties": [{"id": "custom.width", "value": 155}]},
+          {"matcher": {"id": "byName", "options": "Ended"}, "properties": [{"id": "custom.width", "value": 155}]},
+          {"matcher": {"id": "byName", "options": "Duration"}, "properties": [{"id": "custom.width", "value": 85}]},
+          {
+            "matcher": {"id": "byName", "options": "Status"},
+            "properties": [
+              {"id": "custom.width", "value": 75},
+              {"id": "custom.cellOptions", "value": {"type": "color-text"}},
+              {"id": "mappings", "value": [{"type": "value", "options": {
+                "active": {"color": "red"},
+                "resolved": {"color": "green"}
+              }}]}
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "sortBy": [{"displayName": "sort_ts", "desc": true}]
+      }
+    }
+  ]
+}
+EVENTEOF
+}
+
 generate_dashboards() {
     generate_gpu_dashboard
     generate_host_dashboard
     generate_fleet_dashboard
+    generate_event_log_dashboard
     # Inject version into dashboard titles (heredocs are single-quoted, can't expand vars)
     sed -i "s/\"title\": \"GPU Overview\"/\"title\": \"GPU Overview | NOSweb v${NOSWEB_VERSION}\"/" "${GRAFANA_DASH}/gpu-overview.json"
     sed -i "s/\"title\": \"Host Overview\"/\"title\": \"Host Overview | NOSweb v${NOSWEB_VERSION}\"/" "${GRAFANA_DASH}/host-overview.json"
-    sed -i "s/\"title\": \"NOSweb Stack\"/\"title\": \"NOSweb Stack v${NOSWEB_VERSION}\"/" "${GRAFANA_DASH}/gpu-overview.json"
+    sed -i "s/\"title\": \"NOSweb Stack\"/\"title\": \"NOSweb Stack v${NOSWEB_VERSION}\"/g" "${GRAFANA_DASH}/host-overview.json"
+    sed -i "s/\"title\": \"NOSweb Stack\"/\"title\": \"NOSweb Stack v${NOSWEB_VERSION}\"/g" "${GRAFANA_DASH}/fleet-overview.json"
     sed -i "s/\"title\": \"Fleet Overview\"/\"title\": \"Fleet Overview | NOSweb v${NOSWEB_VERSION}\"/" "${GRAFANA_DASH}/fleet-overview.json"
+    sed -i "s/\"title\": \"Fleet Event Log\"/\"title\": \"Fleet Event Log | NOSweb v${NOSWEB_VERSION}\"/" "${GRAFANA_DASH}/event-log.json"
     info "Grafana dashboards generated."
 }
 
@@ -1629,6 +1734,121 @@ fetch_balances() {
 }
 
 # ── Main loop ──
+# Event tracking state
+EVENT_LOG="/data/events.csv"
+EVENT_STATE="/tmp/throttle_state"
+EVENT_METRICS="/data/targets/events.prom"
+touch "$EVENT_STATE" "$EVENT_LOG"
+
+format_duration() {
+    local s="$1"
+    local h=$((s / 3600)) m=$(((s % 3600) / 60)) sec=$((s % 60))
+    if [ "$h" -gt 0 ]; then
+        printf '%dh%dm%ds' "$h" "$m" "$sec"
+    elif [ "$m" -gt 0 ]; then
+        printf '%dm%ds' "$m" "$sec"
+    else
+        printf '%ds' "$sec"
+    fi
+}
+
+check_throttle_type() {
+    local gpu="$1" etype="$2" active="$3" now="$4"
+    local key="${gpu}|${etype}"
+    local was_active=0 start_ts=""
+
+    if [ -s "$EVENT_STATE" ]; then
+        start_ts=$(grep "^${key}|" "$EVENT_STATE" 2>/dev/null | head -1 | cut -d'|' -f3)
+        [ -n "$start_ts" ] && was_active=1
+    fi
+
+    if [ "$active" -gt 0 ] && [ "$was_active" -eq 0 ]; then
+        echo "${key}|${now}" >> "$EVENT_STATE"
+        log "EVENT: ${etype} started on GPU${gpu}"
+    elif [ "$active" -eq 0 ] && [ "$was_active" -eq 1 ]; then
+        local dur=$((now - start_ts))
+        local dur_fmt
+        dur_fmt=$(format_duration "$dur")
+        local start_fmt end_fmt
+        start_fmt=$(date -d "@${start_ts}" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "${start_ts}")
+        end_fmt=$(date -d "@${now}" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "${now}")
+        echo "${start_ts}|${now}|${MY_HOST}|${gpu}|${etype}|${start_fmt}|${end_fmt}|${dur_fmt}|resolved" >> "$EVENT_LOG"
+        local tmp_st
+        tmp_st=$(mktemp -p /tmp)
+        grep -v "^${key}|" "$EVENT_STATE" > "$tmp_st" 2>/dev/null || true
+        mv "$tmp_st" "$EVENT_STATE"
+        log "EVENT: ${etype} resolved on GPU${gpu} (${dur_fmt})"
+    fi
+}
+
+track_throttle_events() {
+    local metrics tmp_thr
+    tmp_thr="/tmp/throttle_check"
+    wget -q -T 3 -O - "http://NOSweb-dcgm:9400/metrics" 2>/dev/null | \
+        grep '^DCGM_FI_DEV_CLOCK_THROTTLE_REASONS{' > "$tmp_thr" 2>/dev/null || return
+    [ -s "$tmp_thr" ] || return
+    local now
+    now=$(date +%s)
+
+    while IFS= read -r line; do
+        local gpu val
+        gpu=$(echo "$line" | grep -o 'gpu="[0-9]*"' | grep -o '[0-9]*')
+        val=$(echo "$line" | awk '{print int($NF)}')
+        [ -z "$gpu" ] || [ -z "$val" ] && continue
+
+        local pwr=$(( (val / 4) % 2 ))
+        local thermal=$(( ((val / 8) % 2) | ((val / 32) % 2) | ((val / 64) % 2) ))
+        local brake=$(( (val / 128) % 2 ))
+
+        check_throttle_type "$gpu" "Pwr Limit" "$pwr" "$now"
+        check_throttle_type "$gpu" "Heat" "$thermal" "$now"
+        check_throttle_type "$gpu" "HW Brake" "$brake" "$now"
+    done < "$tmp_thr"
+    rm -f "$tmp_thr"
+    write_event_metrics
+}
+
+write_event_metrics() {
+    local tmp now
+    tmp=$(mktemp -p "$(dirname "$EVENT_METRICS")")
+    now=$(date +%s)
+
+    cat > "$tmp" << 'EVTHDR'
+# HELP nosweb_event Throttle event with timestamps in labels
+# TYPE nosweb_event gauge
+EVTHDR
+
+    # Active events
+    if [ -s "$EVENT_STATE" ]; then
+        local gpu etype start_ts dur dur_fmt start_fmt
+        while IFS='|' read -r gpu etype start_ts; do
+            [ -z "$gpu" ] && continue
+            dur=$((now - start_ts))
+            dur_fmt=$(format_duration "$dur")
+            start_fmt=$(date -d "@${start_ts}" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "${start_ts}")
+            printf 'nosweb_event{pc="%s",gpuid="%s",event="%s",started="%s",ended="",duration="%s",status="active"} %s\n' \
+                "$MY_HOST" "$gpu" "$etype" "$start_fmt" "$dur_fmt" "$start_ts" >> "$tmp"
+        done < "$EVENT_STATE"
+    fi
+
+    # Resolved events (last 200, within 7 days)
+    if [ -s "$EVENT_LOG" ]; then
+        local cutoff=$((now - 604800))
+        tail -200 "$EVENT_LOG" | while IFS='|' read -r sts ets pc gpuid etype sfmt efmt dfmt status; do
+            [ -z "$sts" ] && continue
+            [ "$sts" -lt "$cutoff" ] 2>/dev/null && continue
+            printf 'nosweb_event{pc="%s",gpuid="%s",event="%s",started="%s",ended="%s",duration="%s",status="%s"} %s\n' \
+                "$pc" "$gpuid" "$etype" "$sfmt" "$efmt" "$dfmt" "$status" "$sts" >> "$tmp"
+        done
+    fi
+
+    chmod 644 "$tmp"
+    mv "$tmp" "$EVENT_METRICS"
+}
+
+# Initialize event metrics
+write_event_metrics
+
 log "starting: host=${MY_HOST} ip=${MY_IP} group=${MY_GROUP} port=${MY_PORT}"
 log "mode: per-GPU wallet discovery + gossip balance sharing"
 if [ -f "$GPU_WALLETS" ]; then
@@ -1639,6 +1859,7 @@ write_targets
 last_balance=0
 while true; do
     gossip_round
+    track_throttle_events
     now=$(date +%s)
     if [ $((now - last_balance)) -ge "$BALANCE_INTERVAL" ]; then
         fetch_balances && last_balance=$now || true
@@ -1748,6 +1969,11 @@ ${auth_block}
             auth_basic off;
             default_type text/plain;
             alias /data/targets/balance.prom;
+        }
+        location = /metrics/events {
+            auth_basic off;
+            default_type text/plain;
+            alias /data/targets/events.prom;
         }
 
         # Fleet discovery endpoint — serves host identity JSON (no auth)
@@ -2034,6 +2260,7 @@ launch_proxy() {
         -v "${INFO_METRICS}:/data/info_metrics:ro"
         -v "${GPU_WALLETS_FILE}:/data/gpu_wallets:ro"
         -v "${STK_CACHE_FILE}:/data/stk_cache"
+        -v "${EVENTS_FILE}:/data/events.csv"
         -v "${PEERS_FILE}:/data/peers.dat"
         -v "${SEED_PEERS_FILE}:/data/seed_peers:ro"
         -v "${PROM_TARGETS}:/data/targets"
@@ -2204,6 +2431,7 @@ main() {
     setup_wallet
     touch "${GPU_WALLETS_FILE}"
     touch "${STK_CACHE_FILE}"
+    touch "${EVENTS_FILE}"
     # Home dashboard preference
     if [ -n "${home_arg}" ]; then
         case "${home_arg}" in
