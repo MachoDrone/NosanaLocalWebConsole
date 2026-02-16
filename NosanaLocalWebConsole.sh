@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-NOSWEB_VERSION="0.02.23"
+NOSWEB_VERSION="0.02.24"
 echo "v${NOSWEB_VERSION}"
 sleep 3
 # =============================================================================
@@ -269,27 +269,27 @@ scan_gpu_wallets() {
     local cid wallet gpu
     while read -r cid; do
         [ -z "$cid" ] && continue
-        wallet=$(docker logs "$cid" 2>&1 | head -22 | grep -m1 "Wallet:" | awk '{print $NF}')
-        gpu=$(docker inspect "$cid" --format '{{join .Config.Cmd " "}}' 2>/dev/null | grep -o '\-\-gpu [0-9]*' | awk '{print $2}')
+        wallet=$(docker logs "$cid" 2>&1 | head -22 | grep -m1 "Wallet:" | awk '{print $NF}' || true)
+        gpu=$(docker inspect "$cid" --format '{{join .Config.Cmd " "}}' 2>/dev/null | grep -o '\-\-gpu [0-9]*' | awk '{print $2}' || true)
         [ -z "$gpu" ] && gpu="0"
         [ -n "$wallet" ] && echo "${gpu}|${wallet}"
     done < <(docker ps -a --filter ancestor=nosana/nosana-cli:latest -q 2>/dev/null) > "$tmp_file"
 
     # Type B: nosana node inside podman-in-docker
     local podman_cid
-    podman_cid=$(docker ps -q --filter name=podman 2>/dev/null | head -1)
+    podman_cid=$(docker ps -q --filter name=podman 2>/dev/null | head -1 || true)
     if [ -n "$podman_cid" ]; then
         local pcid pname pimage
         while IFS=$'\t' read -r pcid pname pimage; do
             [ -z "$pcid" ] && continue
             if echo "${pname}${pimage}" | grep -qi "nosana"; then
-                wallet=$(docker exec podman podman logs "$pcid" 2>&1 | head -22 | grep -m1 "Wallet:" | awk '{print $NF}')
+                wallet=$(docker exec podman podman logs "$pcid" 2>&1 | head -22 | grep -m1 "Wallet:" | awk '{print $NF}' || true)
                 [ -z "$wallet" ] && continue
-                gpu=$(docker exec podman podman inspect "$pcid" --format '{{join .Config.Cmd " "}}' 2>/dev/null | grep -o '\-\-gpu [0-9]*' | awk '{print $2}')
+                gpu=$(docker exec podman podman inspect "$pcid" --format '{{join .Config.Cmd " "}}' 2>/dev/null | grep -o '\-\-gpu [0-9]*' | awk '{print $2}' || true)
                 [ -z "$gpu" ] && gpu="0"
                 echo "${gpu}|${wallet}" >> "$tmp_file"
             fi
-        done < <(docker exec podman podman ps -a --format '{{.ID}}\t{{.Names}}\t{{.Image}}' 2>/dev/null)
+        done < <(docker exec podman podman ps -a --format '{{.ID}}\t{{.Names}}\t{{.Image}}' 2>/dev/null || true)
     fi
 
     # Dedup, sort by GPU index, update file only if we found wallets
@@ -308,7 +308,7 @@ scan_gpu_wallets() {
 }
 
 setup_wallet() {
-    scan_gpu_wallets
+    scan_gpu_wallets || true
     if [ -s "${GPU_WALLETS_FILE}" ]; then
         local count
         count=$(wc -l < "${GPU_WALLETS_FILE}")
@@ -360,8 +360,8 @@ start_wallet_scanner() {
         set +eu
         while true; do
             sleep 60
-            scan_gpu_wallets
-            generate_info_metrics
+            scan_gpu_wallets || true
+            generate_info_metrics || true
         done
     ) &
     echo $! > "$SCANNER_PID_FILE"
