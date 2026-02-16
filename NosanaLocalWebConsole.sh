@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-NOSWEB_VERSION="0.02.24"
+NOSWEB_VERSION="0.02.25"
 echo "v${NOSWEB_VERSION}"
 sleep 3
 # =============================================================================
@@ -269,7 +269,7 @@ scan_gpu_wallets() {
     local cid wallet gpu
     while read -r cid; do
         [ -z "$cid" ] && continue
-        wallet=$(docker logs "$cid" 2>&1 | head -22 | grep -m1 "Wallet:" | awk '{print $NF}' || true)
+        wallet=$(docker logs "$cid" 2>&1 | head -22 | sed 's/\x1b\[[0-9;]*m//g' | tr -d '\r' | grep -m1 "Wallet:" | awk '{print $NF}' || true)
         gpu=$(docker inspect "$cid" --format '{{join .Config.Cmd " "}}' 2>/dev/null | grep -o '\-\-gpu [0-9]*' | awk '{print $2}' || true)
         [ -z "$gpu" ] && gpu="0"
         [ -n "$wallet" ] && echo "${gpu}|${wallet}"
@@ -283,7 +283,7 @@ scan_gpu_wallets() {
         while IFS=$'\t' read -r pcid pname pimage; do
             [ -z "$pcid" ] && continue
             if echo "${pname}${pimage}" | grep -qi "nosana"; then
-                wallet=$(docker exec podman podman logs "$pcid" 2>&1 | head -22 | grep -m1 "Wallet:" | awk '{print $NF}' || true)
+                wallet=$(docker exec podman podman logs "$pcid" 2>&1 | head -22 | sed 's/\x1b\[[0-9;]*m//g' | tr -d '\r' | grep -m1 "Wallet:" | awk '{print $NF}' || true)
                 [ -z "$wallet" ] && continue
                 gpu=$(docker exec podman podman inspect "$pcid" --format '{{join .Config.Cmd " "}}' 2>/dev/null | grep -o '\-\-gpu [0-9]*' | awk '{print $2}' || true)
                 [ -z "$gpu" ] && gpu="0"
