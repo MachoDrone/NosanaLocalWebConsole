@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-NOSWEB_VERSION="0.02.20"
+NOSWEB_VERSION="0.02.21"
 echo "v${NOSWEB_VERSION}"
 sleep 3
 # =============================================================================
@@ -874,7 +874,7 @@ generate_fleet_dashboard() {
         {"refId": "D", "expr": "max by (host, gpu)(DCGM_FI_DEV_FAN_SPEED)", "format": "table", "instant": true},
         {"refId": "E", "expr": "clamp_max(floor(max by (host, gpu)(max_over_time(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS[15m])) / 4) % 2, 1) + clamp_max(floor(max by (host, gpu)(max_over_time(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS[15m])) / 128) % 2, 1) * 4 + clamp_max(clamp_max(floor(max by (host, gpu)(max_over_time(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS[15m])) / 8) % 2, 1) + clamp_max(floor(max by (host, gpu)(max_over_time(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS[15m])) / 32) % 2, 1) + clamp_max(floor(max by (host, gpu)(max_over_time(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS[15m])) / 64) % 2, 1), 1) * 2", "format": "table", "instant": true},
         {"refId": "F", "expr": "label_replace(max by (host, gpu, modelName)(DCGM_FI_DEV_GPU_TEMP * 0 + 1), \"model\", \"$1\", \"modelName\", \"(?:NVIDIA )?(?:GeForce )?(.+)\")", "format": "table", "instant": true},
-        {"refId": "G", "expr": "label_replace(label_replace(max by (host, wallet)(nosweb_host_info), \"wallet_short\", \"$1...\", \"wallet\", \"^(.{5}).*\"), \"gpu\", \"0\", \"\", \"\")", "format": "table", "instant": true},
+        {"refId": "G", "expr": "label_replace(max by (host, wallet)(nosweb_host_info), \"wallet_short\", \"$1...\", \"wallet\", \"^(.{5}).*\")", "format": "table", "instant": true},
         {"refId": "H", "expr": "max by (host, gpu)(max_over_time(DCGM_FI_DEV_PCIE_LINK_GEN[24h])) * 100 + max by (host, gpu)(max_over_time(DCGM_FI_DEV_PCIE_LINK_WIDTH[24h]))", "format": "table", "instant": true},
         {"refId": "I", "expr": "max by (host)(netdata_disk_space_GiB_average{family=\"/\",dimension=\"used\"}) / (max by (host)(netdata_disk_space_GiB_average{family=\"/\",dimension=\"used\"}) + max by (host)(netdata_disk_space_GiB_average{family=\"/\",dimension=\"avail\"})) * 100", "format": "table", "instant": true},
         {"refId": "J", "expr": "max by (host)(nosweb_sol_balance)", "format": "table", "instant": true},
@@ -1039,13 +1039,13 @@ generate_fleet_dashboard() {
               {"id": "mappings", "value": [
                 {"type": "value", "options": {
                   "0": {"text": "ok", "color": "#555555"},
-                  "1": {"text": "Pwr Limit", "color": "orange"},
+                  "1": {"text": "Pwr Limit", "color": "yellow"},
                   "2": {"text": "Heat Throttle!", "color": "red"},
                   "3": {"text": "Heat+Pwr!", "color": "red"},
                   "4": {"text": "HW Pwr Brake!", "color": "red"},
-                  "5": {"text": "HW Brake+Pwr!", "color": "red"},
-                  "6": {"text": "HW Brake+Heat!", "color": "red"},
-                  "7": {"text": "HW Brake+Heat+Pwr!", "color": "red"}
+                  "5": {"text": "Brake+Pwr!", "color": "red"},
+                  "6": {"text": "Brake+Heat!", "color": "red"},
+                  "7": {"text": "Brake+Heat+Pwr!", "color": "red"}
                 }}
               ]},
               {"id": "custom.cellOptions", "value": {"type": "color-text"}},
@@ -1096,7 +1096,7 @@ generate_fleet_dashboard() {
           {
             "matcher": {"id": "byName", "options": "NOS"},
             "properties": [
-              {"id": "decimals", "value": 0},
+              {"id": "decimals", "value": 3},
               {"id": "custom.cellOptions", "value": {"type": "color-text"}},
               {"id": "mappings", "value": [
                 {"type": "value", "options": {"0": {"text": "waiting", "color": "#555555"}}}
@@ -2198,4 +2198,8 @@ main "$@"
 #   0.02.20  Pwr Limit=orange (normal), Heat/HW Brake=red (needs attention).
 #            Explorer shows only on GPUid 0 (no repeats per host).
 #            Footer: countRows + crypto sums. NOS: 0 decimals.
+#   0.02.21  Pwr Limit=yellow. Explorer reverted to all rows (per-GPU wallet
+#            mapping needs docker socket — not available in containers).
+#            NOS back to 3 decimals (Grafana footer inherits cell formatting).
+#            Combined throttle states: Brake+Pwr, Brake+Heat, Brake+Heat+Pwr.
 # =============================================================================
