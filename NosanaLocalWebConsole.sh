@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-NOSWEB_VERSION="0.02.17"
+NOSWEB_VERSION="0.02.18"
 echo "v${NOSWEB_VERSION}"
 sleep 3
 # =============================================================================
@@ -864,7 +864,7 @@ generate_fleet_dashboard() {
   "panels": [
     {
       "id": 1, "type": "table", "title": "GPU Fleet Status",
-      "description": "One row per GPU. Bus=PCIe peak 24h. Storage=root disk. SOL/STK/NOS=wallet balances (updates every 5m).",
+      "description": "One row per GPU across fleet.\\n\\nBus = PCIe link (peak last 24h). 'waiting' = no load detected yet.\\nThrottle checks DCGM clock throttle reasons every 15m:\\n  • Pwr = power cap or power brake (bits 2,7)\\n  • Heat = thermal slowdown SW/HW (bits 3,5,6)\\n  • P+H = both power and thermal active\\n  • ok = no throttle detected\\nSOL/STK/NOS = wallet balances via Solana RPC (updates every 5m, shared via LAN gossip).",
       "gridPos": {"h": 14, "w": 24, "x": 0, "y": 0},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
@@ -893,12 +893,12 @@ generate_fleet_dashboard() {
             "gpu": "GPUid",
             "model": "Model",
             "Value #H": "Bus",
-            "Value #A": "Util %",
-            "Value #B": "Temp",
-            "Value #C": "Power %",
-            "Value #D": "Fan %",
+            "Value #A": "GPU Utilization",
+            "Value #B": "Temperature",
+            "Value #C": "GPU Power",
+            "Value #D": "Fan Speed",
             "Value #E": "Throttle",
-            "Value #I": "Storage",
+            "Value #I": "Storage / Root",
             "Value #J": "SOL",
             "Value #K": "STK",
             "Value #L": "NOS"
@@ -962,11 +962,11 @@ generate_fleet_dashboard() {
             ]
           },
           {
-            "matcher": {"id": "byName", "options": "Util %"},
+            "matcher": {"id": "byName", "options": "GPU Utilization"},
             "properties": [
               {"id": "unit", "value": "percent"}, {"id": "decimals", "value": 0},
               {"id": "min", "value": 0}, {"id": "max", "value": 100},
-              {"id": "custom.cellOptions", "value": {"type": "gauge", "mode": "gradient"}},
+              {"id": "custom.cellOptions", "value": {"type": "gauge", "mode": "basic"}},
               {"id": "thresholds", "value": {"mode": "absolute", "steps": [
                 {"value": null, "color": "dark-green"}, {"value": 70, "color": "yellow"}, {"value": 90, "color": "red"}
               ]}},
@@ -974,11 +974,11 @@ generate_fleet_dashboard() {
             ]
           },
           {
-            "matcher": {"id": "byName", "options": "Temp"},
+            "matcher": {"id": "byName", "options": "Temperature"},
             "properties": [
               {"id": "unit", "value": "celsius"}, {"id": "decimals", "value": 0},
               {"id": "min", "value": 0}, {"id": "max", "value": 100},
-              {"id": "custom.cellOptions", "value": {"type": "gauge", "mode": "gradient"}},
+              {"id": "custom.cellOptions", "value": {"type": "gauge", "mode": "basic"}},
               {"id": "thresholds", "value": {"mode": "absolute", "steps": [
                 {"value": null, "color": "dark-green"}, {"value": 78, "color": "orange"}, {"value": 83, "color": "red"}
               ]}},
@@ -986,11 +986,11 @@ generate_fleet_dashboard() {
             ]
           },
           {
-            "matcher": {"id": "byName", "options": "Power %"},
+            "matcher": {"id": "byName", "options": "GPU Power"},
             "properties": [
               {"id": "unit", "value": "percent"}, {"id": "decimals", "value": 0},
               {"id": "min", "value": 0}, {"id": "max", "value": 100},
-              {"id": "custom.cellOptions", "value": {"type": "gauge", "mode": "gradient"}},
+              {"id": "custom.cellOptions", "value": {"type": "gauge", "mode": "basic"}},
               {"id": "thresholds", "value": {"mode": "absolute", "steps": [
                 {"value": null, "color": "dark-green"}, {"value": 80, "color": "orange"}, {"value": 95, "color": "red"}
               ]}},
@@ -998,11 +998,11 @@ generate_fleet_dashboard() {
             ]
           },
           {
-            "matcher": {"id": "byName", "options": "Fan %"},
+            "matcher": {"id": "byName", "options": "Fan Speed"},
             "properties": [
               {"id": "unit", "value": "percent"}, {"id": "decimals", "value": 0},
               {"id": "min", "value": 0}, {"id": "max", "value": 100},
-              {"id": "custom.cellOptions", "value": {"type": "gauge", "mode": "gradient"}},
+              {"id": "custom.cellOptions", "value": {"type": "gauge", "mode": "basic"}},
               {"id": "thresholds", "value": {"mode": "absolute", "steps": [
                 {"value": null, "color": "dark-green"}, {"value": 60, "color": "orange"}, {"value": 80, "color": "red"}
               ]}},
@@ -1014,7 +1014,7 @@ generate_fleet_dashboard() {
             "properties": [
               {"id": "mappings", "value": [
                 {"type": "value", "options": {
-                  "0": {"text": "OK", "color": "#555555"},
+                  "0": {"text": "ok", "color": "#555555"},
                   "1": {"text": "Pwr Throttle!", "color": "red"},
                   "2": {"text": "Heat Throttle!", "color": "red"},
                   "3": {"text": "P+H Throttle!", "color": "red"}
@@ -1025,11 +1025,11 @@ generate_fleet_dashboard() {
             ]
           },
           {
-            "matcher": {"id": "byName", "options": "Storage"},
+            "matcher": {"id": "byName", "options": "Storage / Root"},
             "properties": [
               {"id": "unit", "value": "percent"}, {"id": "decimals", "value": 0},
               {"id": "min", "value": 0}, {"id": "max", "value": 100},
-              {"id": "custom.cellOptions", "value": {"type": "gauge", "mode": "gradient"}},
+              {"id": "custom.cellOptions", "value": {"type": "gauge", "mode": "basic"}},
               {"id": "thresholds", "value": {"mode": "absolute", "steps": [
                 {"value": null, "color": "dark-green"}, {"value": 70, "color": "yellow"}, {"value": 90, "color": "red"}
               ]}},
@@ -1041,8 +1041,12 @@ generate_fleet_dashboard() {
             "properties": [
               {"id": "decimals", "value": 4},
               {"id": "custom.cellOptions", "value": {"type": "color-text"}},
+              {"id": "mappings", "value": [
+                {"type": "value", "options": {"0": {"text": "waiting", "color": "#555555"}}}
+              ]},
               {"id": "thresholds", "value": {"mode": "absolute", "steps": [
-                {"value": null, "color": "red"},
+                {"value": null, "color": "#555555"},
+                {"value": 0.0001, "color": "red"},
                 {"value": 0.0065, "color": "orange"},
                 {"value": 0.01, "color": "green"}
               ]}},
@@ -1053,17 +1057,23 @@ generate_fleet_dashboard() {
             "matcher": {"id": "byName", "options": "STK"},
             "properties": [
               {"id": "decimals", "value": 0},
-              {"id": "color", "value": {"mode": "fixed", "fixedColor": "dark-green"}},
               {"id": "custom.cellOptions", "value": {"type": "color-text"}},
-              {"id": "custom.width", "value": 60}
+              {"id": "mappings", "value": [
+                {"type": "value", "options": {"0": {"text": "waiting", "color": "#555555"}}}
+              ]},
+              {"id": "color", "value": {"mode": "fixed", "fixedColor": "dark-green"}},
+              {"id": "custom.width", "value": 55}
             ]
           },
           {
             "matcher": {"id": "byName", "options": "NOS"},
             "properties": [
               {"id": "decimals", "value": 3},
-              {"id": "color", "value": {"mode": "fixed", "fixedColor": "dark-green"}},
               {"id": "custom.cellOptions", "value": {"type": "color-text"}},
+              {"id": "mappings", "value": [
+                {"type": "value", "options": {"0": {"text": "waiting", "color": "#555555"}}}
+              ]},
+              {"id": "color", "value": {"mode": "fixed", "fixedColor": "dark-green"}},
               {"id": "custom.width", "value": 75}
             ]
           }
@@ -2152,4 +2162,7 @@ main "$@"
 #            balances in discovery.json. Peers pick up balances over LAN.
 #            Removed balance-fleet Prometheus job — no cross-host scraping.
 #            peers.dat extended: ip|host|group|port|ts|status|sol|nos|stk.
+#   0.02.18  Column renames: GPU Utilization, Temperature, GPU Power, Fan Speed,
+#            Storage / Root. Throttle OK→"ok". SOL/STK/NOS: 0→"waiting" grey.
+#            Gauges: basic mode (solid color, shorter bars at fixed widths).
 # =============================================================================
