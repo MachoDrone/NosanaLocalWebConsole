@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-NOSWEB_VERSION="0.02.26"
+NOSWEB_VERSION="0.02.27"
 echo "v${NOSWEB_VERSION}"
 sleep 3
 # =============================================================================
@@ -943,15 +943,15 @@ generate_fleet_dashboard() {
       {
         "name": "throttle_window",
         "type": "custom",
-        "label": "Throttle Window",
-        "current": {"text": "15m", "value": "15m"},
+        "label": "View Throttle Notifs for",
+        "current": {"text": "1h", "value": "1h"},
         "options": [
-          {"text": "5m", "value": "5m", "selected": false},
-          {"text": "15m", "value": "15m", "selected": true},
-          {"text": "1h", "value": "1h", "selected": false},
-          {"text": "6h", "value": "6h", "selected": false}
+          {"text": "1m", "value": "1m", "selected": false},
+          {"text": "1h", "value": "1h", "selected": true},
+          {"text": "8h", "value": "8h", "selected": false},
+          {"text": "16h", "value": "16h", "selected": false}
         ],
-        "query": "5m,15m,1h,6h"
+        "query": "1m,1h,8h,16h"
       }
     ]
   },
