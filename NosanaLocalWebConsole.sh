@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-NOSWEB_VERSION="0.02.21"
+NOSWEB_VERSION="0.02.23"
 echo "v${NOSWEB_VERSION}"
 sleep 3
 # =============================================================================
@@ -119,6 +119,8 @@ DISCOVERY_SCRIPT="${CONFIG_DIR}/discovery.sh"
 PROXY_ENTRYPOINT="${CONFIG_DIR}/proxy-entrypoint.sh"
 INFO_METRICS="${CONFIG_DIR}/info_metrics"
 WALLET_FILE="${CONFIG_DIR}/.wallet"
+GPU_WALLETS_FILE="${CONFIG_DIR}/gpu_wallets"
+SCANNER_PID_FILE="${CONFIG_DIR}/.wallet_scanner.pid"
 HOME_DASH_FILE="${CONFIG_DIR}/.home_dashboard"
 
 AUTH_VERSION="2"
@@ -257,17 +259,72 @@ setup_peers() {
 # -----------------------------------------------------------------------------
 # Wallet detection (public address only — private key never stored/logged)
 # -----------------------------------------------------------------------------
-detect_wallet() {
-    local wallet="" key_file="${HOME}/.nosana/nosana_key.json"
+scan_gpu_wallets() {
+    # Discover wallet-to-GPU mapping from Nosana containers
+    # Supports Type A (direct Docker) and Type B (podman-in-docker)
+    local tmp_file
+    tmp_file=$(mktemp "${GPU_WALLETS_FILE}.XXXXXX" 2>/dev/null || echo "${GPU_WALLETS_FILE}.tmp")
 
-    # Method 1: solana CLI (most standard, stable since 2020)
-    if command -v solana &>/dev/null && [ -f "${key_file}" ]; then
-        wallet=$(solana address -k "${key_file}" 2>/dev/null || true)
+    # Type A: nosana-cli running directly in Docker
+    local cid wallet gpu
+    while read -r cid; do
+        [ -z "$cid" ] && continue
+        wallet=$(docker logs "$cid" 2>&1 | head -22 | grep -m1 "Wallet:" | awk '{print $NF}')
+        gpu=$(docker inspect "$cid" --format '{{join .Config.Cmd " "}}' 2>/dev/null | grep -o '\-\-gpu [0-9]*' | awk '{print $2}')
+        [ -z "$gpu" ] && gpu="0"
+        [ -n "$wallet" ] && echo "${gpu}|${wallet}"
+    done < <(docker ps -a --filter ancestor=nosana/nosana-cli:latest -q 2>/dev/null) > "$tmp_file"
+
+    # Type B: nosana node inside podman-in-docker
+    local podman_cid
+    podman_cid=$(docker ps -q --filter name=podman 2>/dev/null | head -1)
+    if [ -n "$podman_cid" ]; then
+        local pcid pname pimage
+        while IFS=$'\t' read -r pcid pname pimage; do
+            [ -z "$pcid" ] && continue
+            if echo "${pname}${pimage}" | grep -qi "nosana"; then
+                wallet=$(docker exec podman podman logs "$pcid" 2>&1 | head -22 | grep -m1 "Wallet:" | awk '{print $NF}')
+                [ -z "$wallet" ] && continue
+                gpu=$(docker exec podman podman inspect "$pcid" --format '{{join .Config.Cmd " "}}' 2>/dev/null | grep -o '\-\-gpu [0-9]*' | awk '{print $2}')
+                [ -z "$gpu" ] && gpu="0"
+                echo "${gpu}|${wallet}" >> "$tmp_file"
+            fi
+        done < <(docker exec podman podman ps -a --format '{{.ID}}\t{{.Names}}\t{{.Image}}' 2>/dev/null)
     fi
 
-    # Method 2: Python3 base58 of public key bytes 32-63 (zero installs)
-    if [ -z "${wallet}" ] && [ -f "${key_file}" ] && command -v python3 &>/dev/null; then
-        wallet=$(python3 -c "
+    # Dedup, sort by GPU index, update file only if we found wallets
+    local new_file="${GPU_WALLETS_FILE}.new"
+    sort -t'|' -k1 -n "$tmp_file" | uniq > "$new_file"
+    if [ -s "$new_file" ]; then
+        mv "$new_file" "${GPU_WALLETS_FILE}"
+        # Backward compat: write first wallet to .wallet
+        local first_wallet
+        first_wallet=$(head -1 "${GPU_WALLETS_FILE}" | cut -d'|' -f2)
+        [ -n "$first_wallet" ] && echo -n "$first_wallet" > "${WALLET_FILE}"
+    else
+        rm -f "$new_file"
+    fi
+    rm -f "$tmp_file"
+}
+
+setup_wallet() {
+    scan_gpu_wallets
+    if [ -s "${GPU_WALLETS_FILE}" ]; then
+        local count
+        count=$(wc -l < "${GPU_WALLETS_FILE}")
+        info "GPU wallets discovered: ${count}"
+        while IFS='|' read -r gpu wallet; do
+            info "  GPU ${gpu}: ${wallet:0:8}..."
+        done < "${GPU_WALLETS_FILE}"
+    else
+        warn "No Nosana containers found — wallet discovery skipped."
+        # Fall back to old key-file detection for backward compat
+        local wallet="" key_file="${HOME}/.nosana/nosana_key.json"
+        if command -v solana &>/dev/null && [ -f "${key_file}" ]; then
+            wallet=$(solana address -k "${key_file}" 2>/dev/null || true)
+        fi
+        if [ -z "${wallet}" ] && [ -f "${key_file}" ] && command -v python3 &>/dev/null; then
+            wallet=$(python3 -c "
 import json,sys
 A='123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
 try:
@@ -282,25 +339,34 @@ try:
     print(r)
 except:sys.exit(1)
 " 2>/dev/null || true)
+        fi
+        if [ -n "$wallet" ]; then
+            echo "0|${wallet}" > "${GPU_WALLETS_FILE}"
+            echo -n "${wallet}" > "${WALLET_FILE}"
+            info "Wallet (from key file): ${wallet:0:8}..."
+        else
+            echo -n "unknown" > "${WALLET_FILE}"
+            warn "Wallet: not detected (no Nosana key or containers found)"
+        fi
     fi
-
-    echo "${wallet:-unknown}"
 }
 
-setup_wallet() {
-    local wallet
-    if [ -f "${WALLET_FILE}" ]; then
-        wallet=$(cat "${WALLET_FILE}")
-    else
-        wallet=$(detect_wallet)
-        echo -n "${wallet}" > "${WALLET_FILE}"
+start_wallet_scanner() {
+    # Background daemon: rescans containers every 60s, updates gpu_wallets + info_metrics
+    if [ -f "$SCANNER_PID_FILE" ]; then
+        kill "$(cat "$SCANNER_PID_FILE")" 2>/dev/null || true
     fi
-    if [ "${wallet}" != "unknown" ]; then
-        local short="${wallet:0:5}..."
-        info "Wallet: ${short} (${wallet})"
-    else
-        warn "Wallet: not detected (no Nosana key found)"
-    fi
+    (
+        set +eu
+        while true; do
+            sleep 60
+            scan_gpu_wallets
+            generate_info_metrics
+        done
+    ) &
+    echo $! > "$SCANNER_PID_FILE"
+    disown 2>/dev/null || true
+    info "Wallet scanner started (PID: $!, every 60s)."
 }
 
 # -----------------------------------------------------------------------------
@@ -410,19 +476,29 @@ DCGMEOF
 # Exposes wallet address as a Prometheus label — no private key involved.
 # -----------------------------------------------------------------------------
 generate_info_metrics() {
-    local wallet
-    wallet=$(cat "${WALLET_FILE}" 2>/dev/null || echo "unknown")
-    local my_hostname
-    my_hostname=$(get_hostname)
+    local tmp
+    tmp=$(mktemp "${INFO_METRICS}.XXXXXX" 2>/dev/null || echo "${INFO_METRICS}.tmp")
 
-    cat > "${INFO_METRICS}" << INFOEOF
+    cat > "$tmp" << 'INFOHDR'
 # HELP nosweb_host_info NOSweb host identity information
 # TYPE nosweb_host_info gauge
-nosweb_host_info{wallet="${wallet}"} 1
-INFOEOF
+INFOHDR
 
-    chmod 644 "${INFO_METRICS}"
-    info "Host info metrics generated (wallet: ${wallet:0:5}...)."
+    if [ -s "${GPU_WALLETS_FILE}" ]; then
+        local gpu wallet
+        while IFS='|' read -r gpu wallet; do
+            [ -z "$gpu" ] || [ -z "$wallet" ] && continue
+            echo "nosweb_host_info{gpu=\"${gpu}\",wallet=\"${wallet}\"} 1" >> "$tmp"
+        done < "${GPU_WALLETS_FILE}"
+    else
+        # Fallback: single wallet from .wallet file
+        local wallet
+        wallet=$(cat "${WALLET_FILE}" 2>/dev/null || echo "unknown")
+        echo "nosweb_host_info{gpu=\"0\",wallet=\"${wallet}\"} 1" >> "$tmp"
+    fi
+
+    chmod 644 "$tmp"
+    mv "$tmp" "${INFO_METRICS}"
 }
 
 # -----------------------------------------------------------------------------
@@ -874,12 +950,12 @@ generate_fleet_dashboard() {
         {"refId": "D", "expr": "max by (host, gpu)(DCGM_FI_DEV_FAN_SPEED)", "format": "table", "instant": true},
         {"refId": "E", "expr": "clamp_max(floor(max by (host, gpu)(max_over_time(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS[15m])) / 4) % 2, 1) + clamp_max(floor(max by (host, gpu)(max_over_time(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS[15m])) / 128) % 2, 1) * 4 + clamp_max(clamp_max(floor(max by (host, gpu)(max_over_time(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS[15m])) / 8) % 2, 1) + clamp_max(floor(max by (host, gpu)(max_over_time(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS[15m])) / 32) % 2, 1) + clamp_max(floor(max by (host, gpu)(max_over_time(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS[15m])) / 64) % 2, 1), 1) * 2", "format": "table", "instant": true},
         {"refId": "F", "expr": "label_replace(max by (host, gpu, modelName)(DCGM_FI_DEV_GPU_TEMP * 0 + 1), \"model\", \"$1\", \"modelName\", \"(?:NVIDIA )?(?:GeForce )?(.+)\")", "format": "table", "instant": true},
-        {"refId": "G", "expr": "label_replace(max by (host, wallet)(nosweb_host_info), \"wallet_short\", \"$1...\", \"wallet\", \"^(.{5}).*\")", "format": "table", "instant": true},
+        {"refId": "G", "expr": "label_replace(max by (host, gpu, wallet)(nosweb_host_info), \"wallet_short\", \"$1...\", \"wallet\", \"^(.{5}).*\")", "format": "table", "instant": true},
         {"refId": "H", "expr": "max by (host, gpu)(max_over_time(DCGM_FI_DEV_PCIE_LINK_GEN[24h])) * 100 + max by (host, gpu)(max_over_time(DCGM_FI_DEV_PCIE_LINK_WIDTH[24h]))", "format": "table", "instant": true},
         {"refId": "I", "expr": "max by (host)(netdata_disk_space_GiB_average{family=\"/\",dimension=\"used\"}) / (max by (host)(netdata_disk_space_GiB_average{family=\"/\",dimension=\"used\"}) + max by (host)(netdata_disk_space_GiB_average{family=\"/\",dimension=\"avail\"})) * 100", "format": "table", "instant": true},
-        {"refId": "J", "expr": "max by (host)(nosweb_sol_balance)", "format": "table", "instant": true},
-        {"refId": "K", "expr": "max by (host)(nosweb_nos_staked)", "format": "table", "instant": true},
-        {"refId": "L", "expr": "max by (host)(nosweb_nos_balance)", "format": "table", "instant": true},
+        {"refId": "J", "expr": "max by (host, gpu)(nosweb_sol_balance)", "format": "table", "instant": true},
+        {"refId": "K", "expr": "max by (host, gpu)(nosweb_nos_staked)", "format": "table", "instant": true},
+        {"refId": "L", "expr": "max by (host, gpu)(nosweb_nos_balance)", "format": "table", "instant": true},
         {"refId": "M", "expr": "max by (host, gpu)(DCGM_FI_DEV_PSTATE)", "format": "table", "instant": true}
       ],
       "transformations": [
@@ -1039,7 +1115,7 @@ generate_fleet_dashboard() {
               {"id": "mappings", "value": [
                 {"type": "value", "options": {
                   "0": {"text": "ok", "color": "#555555"},
-                  "1": {"text": "Pwr Limit", "color": "yellow"},
+                  "1": {"text": "Pwr Limit", "color": "#555555"},
                   "2": {"text": "Heat Throttle!", "color": "red"},
                   "3": {"text": "Heat+Pwr!", "color": "red"},
                   "4": {"text": "HW Pwr Brake!", "color": "red"},
@@ -1141,19 +1217,19 @@ generate_dashboards() {
 generate_discovery_script() {
     cat > "${DISCOVERY_SCRIPT}" << 'DISCEOF'
 #!/bin/sh
-# NOSweb Fleet Discovery — HTTP gossip (runs inside proxy container)
-# Each host fetches its OWN wallet balance from Solana RPC.
-# Balances are shared via the /discovery JSON gossip protocol over LAN.
-# No cross-host balance scraping — peers pick up balances during gossip.
+# NOSweb Fleet Discovery — HTTP gossip with per-GPU wallet support
+# Each host scans containers for wallet-to-GPU mapping.
+# Balances fetched per wallet from Solana RPC, shared via gossip.
 
 PEERS_FILE="/data/peers.dat"
 TARGETS_FILE="/data/targets/fleet.json"
 SEED_FILE="/data/seed_peers"
+GPU_WALLETS="/data/gpu_wallets"
+GPU_BALANCES="/tmp/gpu_balances"
 MY_IP="${NOSWEB_IP}"
 MY_HOST="${NOSWEB_HOSTNAME}"
 MY_GROUP="${NOSWEB_GROUP}"
 MY_PORT="${NOSWEB_PORT:-19999}"
-MY_WALLET="${NOSWEB_WALLET:-unknown}"
 INTERVAL=30
 OFFLINE_AFTER=180
 SCAN_DIR="/tmp/discovery_scan"
@@ -1163,66 +1239,108 @@ SOLANA_RPC="https://api.mainnet-beta.solana.com"
 NOS_MINT="nosXBVoaCTtYdLvKY6Csb4AC8JCdQKKAaWYtx2ZMoo7"
 NOS_STAKE_PROGRAM="nosScmHY2uR24Zh751PmGj9ww9QRNHewh9H59AfrTJE"
 
-# Own balance state (updated by fetch_balances)
-MY_SOL="0"
-MY_NOS="0"
-MY_STK="0"
-
 log() { echo "[discovery] $*"; }
 
 touch "$PEERS_FILE"
 mkdir -p "$(dirname "$TARGETS_FILE")" "$SCAN_DIR"
 
-# ── Write discovery.json — includes balance data ──
+# ── Initialize GPU balances file (gpu|wallet|sol|nos|stk per line) ──
+init_gpu_balances() {
+    if [ -f "$GPU_WALLETS" ] && [ -s "$GPU_WALLETS" ]; then
+        local gpu wallet
+        > "$GPU_BALANCES"
+        while IFS='|' read -r gpu wallet; do
+            [ -z "$gpu" ] || [ -z "$wallet" ] && continue
+            echo "${gpu}|${wallet}|0|0|0" >> "$GPU_BALANCES"
+        done < "$GPU_WALLETS"
+    else
+        echo "0|unknown|0|0|0" > "$GPU_BALANCES"
+    fi
+}
+init_gpu_balances
+
+# ── Build gpus string for discovery JSON: 0|wallet|sol|nos|stk,1|wallet|... ──
+build_gpus_string() {
+    local first=1 result=""
+    if [ -f "$GPU_BALANCES" ]; then
+        while IFS='|' read -r gpu wallet sol nos stk; do
+            [ -z "$gpu" ] && continue
+            [ "$first" -eq 0 ] && result="${result},"
+            result="${result}${gpu}|${wallet}|${sol}|${nos}|${stk}"
+            first=0
+        done < "$GPU_BALANCES"
+    fi
+    echo "$result"
+}
+
+# ── Write discovery.json ──
 write_discovery() {
+    local gpus_str first_wallet first_sol first_nos first_stk
+    gpus_str=$(build_gpus_string)
+    # Backward compat: first wallet's data in top-level fields
+    first_wallet=$(head -1 "$GPU_BALANCES" 2>/dev/null | cut -d'|' -f2)
+    first_sol=$(head -1 "$GPU_BALANCES" 2>/dev/null | cut -d'|' -f3)
+    first_nos=$(head -1 "$GPU_BALANCES" 2>/dev/null | cut -d'|' -f4)
+    first_stk=$(head -1 "$GPU_BALANCES" 2>/dev/null | cut -d'|' -f5)
+    [ -z "$first_wallet" ] && first_wallet="unknown"
+    [ -z "$first_sol" ] && first_sol="0"
+    [ -z "$first_nos" ] && first_nos="0"
+    [ -z "$first_stk" ] && first_stk="0"
     cat > /data/discovery.json << IDJSON
-{"host":"${MY_HOST}","ip":"${MY_IP}","group":"${MY_GROUP}","port":${MY_PORT},"version":"${NOSWEB_VERSION:-unknown}","wallet":"${MY_WALLET}","sol":${MY_SOL},"nos":${MY_NOS},"stk":${MY_STK}}
+{"host":"${MY_HOST}","ip":"${MY_IP}","group":"${MY_GROUP}","port":${MY_PORT},"version":"${NOSWEB_VERSION:-unknown}","wallet":"${first_wallet}","sol":${first_sol},"nos":${first_nos},"stk":${first_stk},"gpus":"${gpus_str}"}
 IDJSON
 }
 
-# Seed initial discovery.json
 write_discovery
 
-# ── Seed empty balance file so nginx doesn't 404 ──
+# ── Write per-GPU balance metrics for Prometheus ──
 write_balance_metrics() {
     local tmp
     tmp=$(mktemp -p "$(dirname "$BALANCE_FILE")")
-    cat > "$tmp" << BALHEADER
-# HELP nosweb_sol_balance SOL balance per host
+    cat > "$tmp" << 'BALHEADER'
+# HELP nosweb_sol_balance SOL balance per GPU wallet
 # TYPE nosweb_sol_balance gauge
-# HELP nosweb_nos_balance NOS token balance per host
+# HELP nosweb_nos_balance NOS token balance per GPU wallet
 # TYPE nosweb_nos_balance gauge
-# HELP nosweb_nos_staked Staked NOS balance per host
+# HELP nosweb_nos_staked Staked NOS balance per GPU wallet
 # TYPE nosweb_nos_staked gauge
 BALHEADER
 
-    # Own balances
-    printf 'nosweb_sol_balance{host="%s"} %s\n' "$MY_HOST" "$MY_SOL" >> "$tmp"
-    printf 'nosweb_nos_balance{host="%s"} %s\n' "$MY_HOST" "$MY_NOS" >> "$tmp"
-    printf 'nosweb_nos_staked{host="%s"} %s\n' "$MY_HOST" "$MY_STK" >> "$tmp"
+    # Own balances (per GPU)
+    if [ -f "$GPU_BALANCES" ]; then
+        local gpu wallet sol nos stk
+        while IFS='|' read -r gpu wallet sol nos stk; do
+            [ -z "$gpu" ] && continue
+            [ "$wallet" = "unknown" ] && continue
+            printf 'nosweb_sol_balance{host="%s",gpu="%s"} %s\n' "$MY_HOST" "$gpu" "${sol:-0}" >> "$tmp"
+            printf 'nosweb_nos_balance{host="%s",gpu="%s"} %s\n' "$MY_HOST" "$gpu" "${nos:-0}" >> "$tmp"
+            printf 'nosweb_nos_staked{host="%s",gpu="%s"} %s\n' "$MY_HOST" "$gpu" "${stk:-0}" >> "$tmp"
+        done < "$GPU_BALANCES"
+    fi
 
     # Peer balances from peers.dat
-    while IFS='|' read -r ip host group port last_seen status sol nos stk _; do
+    local now ip host group port last_seen status gpus_data age
+    now=$(date +%s)
+    while IFS='|' read -r ip host group port last_seen status gpus_data; do
         [ -z "$ip" ] && continue
         [ "$ip" = "$MY_IP" ] && continue
-        local age now
-        now=$(date +%s)
         age=$((now - last_seen))
         [ "$age" -gt "$OFFLINE_AFTER" ] && continue
-        # Only write if we have balance data
-        [ -z "$sol" ] && sol="0"
-        [ -z "$nos" ] && nos="0"
-        [ -z "$stk" ] && stk="0"
-        printf 'nosweb_sol_balance{host="%s"} %s\n' "$host" "$sol" >> "$tmp"
-        printf 'nosweb_nos_balance{host="%s"} %s\n' "$host" "$nos" >> "$tmp"
-        printf 'nosweb_nos_staked{host="%s"} %s\n' "$host" "$stk" >> "$tmp"
+        [ -z "$gpus_data" ] && continue
+        # Parse gpus_data: 0|wallet|sol|nos|stk,1|wallet|sol|nos|stk,...
+        echo "$gpus_data" | tr ',' '\n' | while IFS='|' read -r pgpu pwallet psol pnos pstk; do
+            [ -z "$pgpu" ] && continue
+            [ "$pwallet" = "unknown" ] && continue
+            printf 'nosweb_sol_balance{host="%s",gpu="%s"} %s\n' "$host" "$pgpu" "${psol:-0}" >> "$tmp"
+            printf 'nosweb_nos_balance{host="%s",gpu="%s"} %s\n' "$host" "$pgpu" "${pnos:-0}" >> "$tmp"
+            printf 'nosweb_nos_staked{host="%s",gpu="%s"} %s\n' "$host" "$pgpu" "${pstk:-0}" >> "$tmp"
+        done
     done < "$PEERS_FILE"
 
     chmod 644 "$tmp"
     mv "$tmp" "$BALANCE_FILE"
 }
 
-# Seed initial balance file
 write_balance_metrics
 
 # ── Derive /24 subnet base from own IP ──
@@ -1237,7 +1355,7 @@ write_targets() {
     tmp=$(mktemp -p "$(dirname "$TARGETS_FILE")")
     first=1
     printf '[' > "$tmp"
-    while IFS='|' read -r ip host group port last_seen status _ _ _ _; do
+    while IFS='|' read -r ip host group port last_seen status _; do
         [ -z "$ip" ] && continue
         [ "$ip" = "$MY_IP" ] && continue
         age=$((now - last_seen))
@@ -1260,8 +1378,7 @@ write_targets() {
 # ── Process a /discovery JSON response ──
 process_response() {
     local ip="$1" body="$2"
-    local rhost rip rgroup rport rsol rnos rstk
-    # Parse JSON fields (lightweight — no jq in Alpine)
+    local rhost rip rgroup rport rgpus
     rhost=$(echo "$body" | sed -n 's/.*"host"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
     rip=$(echo "$body" | sed -n 's/.*"ip"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
     rgroup=$(echo "$body" | sed -n 's/.*"group"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
@@ -1269,25 +1386,33 @@ process_response() {
     [ -z "$rhost" ] && return
     [ -z "$rip" ] && rip="$ip"
     [ -z "$rport" ] && rport="$MY_PORT"
-    # Ignore self
     [ "$rip" = "$MY_IP" ] && return
-    # Ignore different group
     [ "$rgroup" != "$MY_GROUP" ] && return
-    # Extract balance data from peer's discovery JSON
-    rsol=$(echo "$body" | grep -o '"sol":[0-9.e+-]*' | head -1 | grep -o '[0-9.e+-]*$')
-    rnos=$(echo "$body" | grep -o '"nos":[0-9.e+-]*' | head -1 | grep -o '[0-9.e+-]*$')
-    rstk=$(echo "$body" | grep -o '"stk":[0-9.e+-]*' | head -1 | grep -o '[0-9.e+-]*$')
-    [ -z "$rsol" ] && rsol="0"
-    [ -z "$rnos" ] && rnos="0"
-    [ -z "$rstk" ] && rstk="0"
-    # Upsert peer in database (format: ip|host|group|port|ts|status|sol|nos|stk)
+
+    # Try new gpus field first, fall back to legacy wallet/sol/nos/stk
+    rgpus=$(echo "$body" | sed -n 's/.*"gpus"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+    if [ -z "$rgpus" ]; then
+        # Legacy: single wallet
+        local rwallet rsol rnos rstk
+        rwallet=$(echo "$body" | sed -n 's/.*"wallet"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+        rsol=$(echo "$body" | grep -o '"sol":[0-9.e+-]*' | head -1 | grep -o '[0-9.e+-]*$')
+        rnos=$(echo "$body" | grep -o '"nos":[0-9.e+-]*' | head -1 | grep -o '[0-9.e+-]*$')
+        rstk=$(echo "$body" | grep -o '"stk":[0-9.e+-]*' | head -1 | grep -o '[0-9.e+-]*$')
+        [ -z "$rwallet" ] && rwallet="unknown"
+        [ -z "$rsol" ] && rsol="0"
+        [ -z "$rnos" ] && rnos="0"
+        [ -z "$rstk" ] && rstk="0"
+        rgpus="0|${rwallet}|${rsol}|${rnos}|${rstk}"
+    fi
+
+    # Upsert peer: ip|host|group|port|ts|status|gpus_data
     local now tmp
     now=$(date +%s)
     tmp=$(mktemp -p /data)
     grep -v "^${rip}|" "$PEERS_FILE" > "$tmp" 2>/dev/null || true
-    echo "${rip}|${rhost}|${rgroup}|${rport}|${now}|online|${rsol}|${rnos}|${rstk}" >> "$tmp"
+    echo "${rip}|${rhost}|${rgroup}|${rport}|${now}|online|${rgpus}" >> "$tmp"
     cat "$tmp" > "$PEERS_FILE" && rm -f "$tmp"
-    log "peer: ${rhost} (${rip}) sol=${rsol} nos=${rnos} stk=${rstk}"
+    log "peer: ${rhost} (${rip}) gpus=${rgpus}"
 }
 
 # ── Probe a single IP via HTTP ──
@@ -1297,22 +1422,30 @@ probe_ip() {
     wget -q -T 1 -O "$outfile" "http://${ip}:${port}/discovery" 2>/dev/null || rm -f "$outfile"
 }
 
-# ── Gossip round: scan subnet + seed peers + known peers ──
+# ── Gossip round ──
 gossip_round() {
-    # Clean previous scan
     rm -f "${SCAN_DIR}"/*
+
+    # Re-read gpu_wallets in case scanner updated it
+    if [ -f "$GPU_WALLETS" ] && [ -s "$GPU_WALLETS" ]; then
+        local new_count old_count
+        new_count=$(wc -l < "$GPU_WALLETS")
+        old_count=$(wc -l < "$GPU_BALANCES" 2>/dev/null || echo 0)
+        if [ "$new_count" != "$old_count" ]; then
+            init_gpu_balances
+            log "gpu_wallets changed (${old_count} -> ${new_count}), reinitializing"
+        fi
+    fi
 
     local base
     base=$(subnet_base)
 
-    # Subnet scan: probe all /24 addresses in parallel
     local i=1
     while [ "$i" -le 254 ]; do
         probe_ip "${base}.${i}" &
         i=$((i + 1))
     done
 
-    # Also probe seed peers (may be on different subnets)
     if [ -f "$SEED_FILE" ]; then
         while IFS= read -r peer; do
             [ -z "$peer" ] && continue
@@ -1320,17 +1453,14 @@ gossip_round() {
         done < "$SEED_FILE"
     fi
 
-    # Also probe known peers from database
-    while IFS='|' read -r ip _ _ port _ _ _ _ _ _; do
+    while IFS='|' read -r ip _ _ port _ _ _; do
         [ -z "$ip" ] && continue
         [ "$ip" = "$MY_IP" ] && continue
         probe_ip "$ip" "$port" &
     done < "$PEERS_FILE"
 
-    # Wait for all probes to finish (1s timeout each, run in parallel)
     wait
 
-    # Process responses
     local changed=0
     for f in "${SCAN_DIR}"/*; do
         [ -f "$f" ] || continue
@@ -1338,7 +1468,6 @@ gossip_round() {
         ip=$(basename "$f")
         body=$(cat "$f")
         [ -z "$body" ] && continue
-        # Only process if it looks like valid JSON
         echo "$body" | grep -q '"host"' || continue
         process_response "$ip" "$body"
         changed=1
@@ -1349,70 +1478,96 @@ gossip_round() {
     [ "$changed" -eq 1 ] && log "targets updated"
 }
 
-# ── Fetch OWN wallet balances from Solana RPC ──
-fetch_balances() {
-    [ "$MY_WALLET" = "unknown" ] && return 1
+# ── Fetch balance for a single wallet ──
+fetch_wallet_balance() {
+    local wallet="$1"
+    local sol="0" nos="0" stk="0"
+    local resp raw lamports retry
 
-    local resp lamports retry raw
-
-    # SOL balance (lamports → SOL / 1e9)
+    # SOL
     for retry in 1 2; do
         resp=$(wget -q -T 8 -O - \
             --header='Content-Type: application/json' \
-            --post-data='{"jsonrpc":"2.0","id":1,"method":"getBalance","params":["'"$MY_WALLET"'"]}' \
+            --post-data='{"jsonrpc":"2.0","id":1,"method":"getBalance","params":["'"$wallet"'"]}' \
             "$SOLANA_RPC" 2>/dev/null) && break || sleep 2
     done
     if [ -n "$resp" ]; then
         lamports=$(echo "$resp" | grep -o '"value":[0-9]*' | head -1 | grep -o '[0-9]*$')
         [ -n "$lamports" ] && [ "$lamports" -gt 0 ] 2>/dev/null && \
-            MY_SOL=$(awk "BEGIN{printf \"%.10f\", $lamports/1000000000}")
+            sol=$(awk "BEGIN{printf \"%.10f\", $lamports/1000000000}")
     fi
 
-    # NOS token balance (SPL token, 6 decimals)
+    # NOS
     for retry in 1 2; do
         resp=$(wget -q -T 8 -O - \
             --header='Content-Type: application/json' \
-            --post-data='{"jsonrpc":"2.0","id":1,"method":"getTokenAccountsByOwner","params":["'"$MY_WALLET"'",{"mint":"'"$NOS_MINT"'"},{"encoding":"jsonParsed"}]}' \
+            --post-data='{"jsonrpc":"2.0","id":1,"method":"getTokenAccountsByOwner","params":["'"$wallet"'",{"mint":"'"$NOS_MINT"'"},{"encoding":"jsonParsed"}]}' \
             "$SOLANA_RPC" 2>/dev/null) && break || sleep 2
     done
     if [ -n "$resp" ]; then
         raw=$(echo "$resp" | grep -o '"uiAmount":[0-9.e+-]*' | head -1 | grep -o '[0-9.e+-]*$')
         if [ -n "$raw" ] && [ "$raw" != "0" ]; then
-            MY_NOS=$(awk "BEGIN{printf \"%.6f\", $raw + 0}")
+            nos=$(awk "BEGIN{printf \"%.6f\", $raw + 0}")
         fi
-        # Fallback: raw "amount" string ÷ 1e6
-        if [ "$MY_NOS" = "0" ]; then
+        if [ "$nos" = "0" ]; then
             raw=$(echo "$resp" | grep -o '"amount":"[0-9]*"' | head -1 | grep -o '[0-9]*')
             [ -n "$raw" ] && [ "$raw" != "0" ] && \
-                MY_NOS=$(awk "BEGIN{printf \"%.6f\", $raw/1000000}")
+                nos=$(awk "BEGIN{printf \"%.6f\", $raw/1000000}")
         fi
     fi
 
-    # STK: staked NOS via Nosana stake program
+    # STK
     for retry in 1 2; do
         resp=$(wget -q -T 10 -O - \
             --header='Content-Type: application/json' \
-            --post-data='{"jsonrpc":"2.0","id":1,"method":"getProgramAccounts","params":["'"$NOS_STAKE_PROGRAM"'",{"encoding":"jsonParsed","filters":[{"memcmp":{"offset":8,"bytes":"'"$MY_WALLET"'","encoding":"base58"}}]}]}' \
+            --post-data='{"jsonrpc":"2.0","id":1,"method":"getProgramAccounts","params":["'"$NOS_STAKE_PROGRAM"'",{"encoding":"jsonParsed","filters":[{"memcmp":{"offset":8,"bytes":"'"$wallet"'","encoding":"base58"}}]}]}' \
             "$SOLANA_RPC" 2>/dev/null) && break || sleep 2
     done
     if [ -n "$resp" ]; then
         local stk_raw
         stk_raw=$(echo "$resp" | grep -o '"amount":"[0-9]*"' | head -1 | grep -o '[0-9]*')
         [ -n "$stk_raw" ] && [ "$stk_raw" != "0" ] && \
-            MY_STK=$(awk "BEGIN{printf \"%.6f\", $stk_raw/1000000}")
+            stk=$(awk "BEGIN{printf \"%.6f\", $stk_raw/1000000}")
     fi
 
-    # Update discovery.json with fresh balance data
-    write_discovery
-    # Update combined balance metrics
-    write_balance_metrics
+    echo "${sol}|${nos}|${stk}"
+}
 
-    log "balance: SOL=$MY_SOL NOS=$MY_NOS STK=$MY_STK"
+# ── Fetch balances for ALL GPU wallets ──
+fetch_balances() {
+    [ ! -f "$GPU_BALANCES" ] && return 1
+
+    local stagger
+    stagger=$((${MY_IP##*.} % 26))
+    sleep "$stagger"
+
+    local gpu wallet sol nos stk result tmp_bal
+    tmp_bal=$(mktemp -p /tmp)
+
+    while IFS='|' read -r gpu wallet _sol _nos _stk; do
+        [ -z "$gpu" ] || [ -z "$wallet" ] || [ "$wallet" = "unknown" ] && continue
+        result=$(fetch_wallet_balance "$wallet")
+        sol=$(echo "$result" | cut -d'|' -f1)
+        nos=$(echo "$result" | cut -d'|' -f2)
+        stk=$(echo "$result" | cut -d'|' -f3)
+        echo "${gpu}|${wallet}|${sol}|${nos}|${stk}" >> "$tmp_bal"
+        log "balance: GPU${gpu} (${wallet:0:8}...) SOL=${sol} NOS=${nos} STK=${stk}"
+        # Small delay between wallets to avoid RPC rate limits
+        sleep 2
+    done < "$GPU_BALANCES"
+
+    [ -s "$tmp_bal" ] && mv "$tmp_bal" "$GPU_BALANCES" || rm -f "$tmp_bal"
+
+    write_discovery
+    write_balance_metrics
 }
 
 # ── Main loop ──
 log "starting: host=${MY_HOST} ip=${MY_IP} group=${MY_GROUP} port=${MY_PORT}"
-log "mode: HTTP gossip + balance sharing (each host fetches own wallet only)"
+log "mode: per-GPU wallet discovery + gossip balance sharing"
+if [ -f "$GPU_WALLETS" ]; then
+    log "gpu_wallets: $(wc -l < "$GPU_WALLETS") entries"
+fi
 write_targets
 
 last_balance=0
@@ -1794,11 +1949,10 @@ launch_proxy() {
     step "Pulling Nginx..."
     docker pull "${IMG_NGINX}"
 
-    local my_ip my_hostname my_group my_wallet
+    local my_ip my_hostname my_group
     my_ip=$(get_ip)
     my_hostname=$(get_hostname)
     my_group=$(cat "${GROUP_FILE}" 2>/dev/null || echo "${DEFAULT_GROUP}")
-    my_wallet=$(cat "${WALLET_FILE}" 2>/dev/null || echo "unknown")
 
     step "Launching proxy on port ${DEFAULT_PORT}..."
     local -a cmd=(
@@ -1812,6 +1966,7 @@ launch_proxy() {
         -v "${PROXY_ENTRYPOINT}:/data/entrypoint.sh:ro"
         -v "${DISCOVERY_SCRIPT}:/data/discovery.sh:ro"
         -v "${INFO_METRICS}:/data/info_metrics:ro"
+        -v "${GPU_WALLETS_FILE}:/data/gpu_wallets:ro"
         -v "${PEERS_FILE}:/data/peers.dat"
         -v "${SEED_PEERS_FILE}:/data/seed_peers:ro"
         -v "${PROM_TARGETS}:/data/targets"
@@ -1820,7 +1975,6 @@ launch_proxy() {
         -e "NOSWEB_GROUP=${my_group}"
         -e "NOSWEB_PORT=${DEFAULT_PORT}"
         -e "NOSWEB_VERSION=${NOSWEB_VERSION}"
-        -e "NOSWEB_WALLET=${my_wallet}"
     )
 
     [ "${NOLOGIN}" = false ] && [ -f "${HTPASSWD_FILE}" ] && \
@@ -1981,6 +2135,7 @@ main() {
     setup_group "${group_arg}"
     setup_peers "${peer_args[@]}"
     setup_wallet
+    touch "${GPU_WALLETS_FILE}"
     # Home dashboard preference
     if [ -n "${home_arg}" ]; then
         case "${home_arg}" in
@@ -2017,6 +2172,8 @@ main() {
     launch_prometheus; echo ""
     launch_grafana;    echo ""
     launch_proxy
+
+    start_wallet_scanner
 
     open_firewall "${port}"
 
