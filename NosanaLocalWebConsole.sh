@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-NOSWEB_VERSION="0.02.34"
+NOSWEB_VERSION="0.02.35"
 echo "v${NOSWEB_VERSION}"
 sleep 3
 # =============================================================================
@@ -947,7 +947,7 @@ generate_host_dashboard() {
     {
       "id": 5, "type": "stat", "title": "NOSweb Stack",
       "description": "Monitoring stack overhead. RAM/CPU: Prometheus+Grafana processes. TSDB: Prometheus storage on disk (15d retention). Net: Prometheus HTTP scrape traffic. Containers: NOSweb Docker containers running.",
-      "gridPos": {"h": 6, "w": 24, "x": 0, "y": 16},
+      "gridPos": {"h": 3, "w": 24, "x": 0, "y": 16},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {"refId": "A", "expr": "sum(process_resident_memory_bytes{job=~\"prometheus|grafana\"}) / 1024 / 1024", "legendFormat": "RAM"},
@@ -967,8 +967,9 @@ generate_host_dashboard() {
           {"matcher": {"id": "byName", "options": "Net Out"}, "properties": [{"id": "unit", "value": "Bps"}, {"id": "thresholds", "value": {"mode": "absolute", "steps": [{"value": null, "color": "green"}, {"value": 102400, "color": "yellow"}, {"value": 1048576, "color": "red"}]}}]},
           {"matcher": {"id": "byName", "options": "Containers"}, "properties": [{"id": "unit", "value": "short"}, {"id": "thresholds", "value": {"mode": "absolute", "steps": [{"value": null, "color": "red"}, {"value": 5, "color": "green"}]}}]}
         ]},
-      "options": {"graphMode": "area", "colorMode": "value", "textMode": "auto",
-        "reduceOptions": {"calcs": ["lastNotNull"]}}
+      "options": {"graphMode": "none", "colorMode": "value", "textMode": "value_and_name", "orientation": "horizontal",
+        "reduceOptions": {"calcs": ["lastNotNull"]},
+        "text": {"titleSize": 8, "valueSize": 14}}
     }
   ]
 }
@@ -1007,48 +1008,48 @@ generate_fleet_dashboard() {
   "panels": [
     {
       "id": 3, "type": "stat", "title": "NOSweb Stack",
-      "gridPos": {"h": 3, "w": 5, "x": 0, "y": 0},
+      "gridPos": {"h": 2, "w": 5, "x": 0, "y": 0},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [{"refId": "A", "expr": "sum(process_resident_memory_bytes{job=~\"prometheus|grafana\"}) / 1024 / 1024", "legendFormat": "Prom+Graf"}],
       "fieldConfig": {"defaults": {"unit": "decmbytes", "decimals": 0, "thresholds": {"mode": "absolute", "steps": [{"value": null, "color": "green"}, {"value": 300, "color": "yellow"}, {"value": 600, "color": "red"}]}}},
-      "options": {"graphMode": "none", "colorMode": "value", "textMode": "value_and_name", "reduceOptions": {"calcs": ["lastNotNull"]}, "text": {"titleSize": 10, "valueSize": 16}}
+      "options": {"graphMode": "none", "colorMode": "value", "textMode": "value_and_name", "reduceOptions": {"calcs": ["lastNotNull"]}, "text": {"titleSize": 8, "valueSize": 12}}
     },
     {
       "id": 30, "type": "stat", "title": "",
-      "gridPos": {"h": 3, "w": 4, "x": 5, "y": 0},
+      "gridPos": {"h": 2, "w": 4, "x": 5, "y": 0},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [{"refId": "A", "expr": "sum(rate(process_cpu_seconds_total{job=~\"prometheus|grafana\"}[2m])) * 100", "legendFormat": "CPU %"}],
       "fieldConfig": {"defaults": {"unit": "percent", "decimals": 1, "thresholds": {"mode": "absolute", "steps": [{"value": null, "color": "green"}, {"value": 10, "color": "yellow"}, {"value": 50, "color": "red"}]}}},
-      "options": {"graphMode": "none", "colorMode": "value", "textMode": "value_and_name", "reduceOptions": {"calcs": ["lastNotNull"]}, "text": {"titleSize": 10, "valueSize": 16}}
+      "options": {"graphMode": "none", "colorMode": "value", "textMode": "value_and_name", "reduceOptions": {"calcs": ["lastNotNull"]}, "text": {"titleSize": 8, "valueSize": 12}}
     },
     {
       "id": 31, "type": "stat", "title": "",
-      "gridPos": {"h": 3, "w": 5, "x": 9, "y": 0},
+      "gridPos": {"h": 2, "w": 5, "x": 9, "y": 0},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [{"refId": "A", "expr": "(prometheus_tsdb_storage_blocks_bytes + prometheus_tsdb_wal_storage_size_bytes + prometheus_tsdb_head_chunks_storage_size_bytes) / 1024 / 1024", "legendFormat": "TSDB"}],
       "fieldConfig": {"defaults": {"unit": "decmbytes", "decimals": 0, "thresholds": {"mode": "absolute", "steps": [{"value": null, "color": "green"}, {"value": 500, "color": "yellow"}, {"value": 1000, "color": "red"}]}}},
-      "options": {"graphMode": "none", "colorMode": "value", "textMode": "value_and_name", "reduceOptions": {"calcs": ["lastNotNull"]}, "text": {"titleSize": 10, "valueSize": 16}}
+      "options": {"graphMode": "none", "colorMode": "value", "textMode": "value_and_name", "reduceOptions": {"calcs": ["lastNotNull"]}, "text": {"titleSize": 8, "valueSize": 12}}
     },
     {
       "id": 32, "type": "stat", "title": "",
-      "gridPos": {"h": 3, "w": 5, "x": 14, "y": 0},
+      "gridPos": {"h": 2, "w": 5, "x": 14, "y": 0},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [{"refId": "A", "expr": "sum(rate(prometheus_http_response_size_bytes_sum[5m]))", "legendFormat": "Net Out"}],
       "fieldConfig": {"defaults": {"unit": "Bps", "decimals": 0, "thresholds": {"mode": "absolute", "steps": [{"value": null, "color": "green"}, {"value": 102400, "color": "yellow"}, {"value": 1048576, "color": "red"}]}}},
-      "options": {"graphMode": "none", "colorMode": "value", "textMode": "value_and_name", "reduceOptions": {"calcs": ["lastNotNull"]}, "text": {"titleSize": 10, "valueSize": 16}}
+      "options": {"graphMode": "none", "colorMode": "value", "textMode": "value_and_name", "reduceOptions": {"calcs": ["lastNotNull"]}, "text": {"titleSize": 8, "valueSize": 12}}
     },
     {
       "id": 33, "type": "stat", "title": "",
-      "gridPos": {"h": 3, "w": 5, "x": 19, "y": 0},
+      "gridPos": {"h": 2, "w": 5, "x": 19, "y": 0},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [{"refId": "A", "expr": "max(nosweb_containers_running)", "legendFormat": "Containers"}],
       "fieldConfig": {"defaults": {"unit": "short", "decimals": 0, "thresholds": {"mode": "absolute", "steps": [{"value": null, "color": "red"}, {"value": 5, "color": "green"}]}}},
-      "options": {"graphMode": "none", "colorMode": "value", "textMode": "value_and_name", "reduceOptions": {"calcs": ["lastNotNull"]}, "text": {"titleSize": 10, "valueSize": 16}}
+      "options": {"graphMode": "none", "colorMode": "value", "textMode": "value_and_name", "reduceOptions": {"calcs": ["lastNotNull"]}, "text": {"titleSize": 8, "valueSize": 12}}
     },
     {
       "id": 1, "type": "table", "title": "GPU Fleet Status",
       "description": "One row per GPU across fleet. Perf=P-state (P0=max, P8=idle).\\n\\nThrottle (lookback controlled by dropdown above):\\n  ok = no throttle\\n  Pwr Limit (orange) = normal, GPU hitting configured power cap\\n  Heat Throttle! (red) = thermal slowdown, check airflow/dust/spacing\\n  HW Pwr Brake! (red) = PSU/cable issue, needs immediate attention\\n  Combined states shown when multiple throttles active\\n  Set dropdown to 1m to clear old events quickly.\\n\\nSOL/STK/NOS update every 5m via Solana RPC. Footer shows fleet totals.",
-      "gridPos": {"h": 14, "w": 24, "x": 0, "y": 3},
+      "gridPos": {"h": 14, "w": 24, "x": 0, "y": 2},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {"refId": "A", "expr": "max by (host, gpu)(DCGM_FI_DEV_GPU_UTIL)", "format": "table", "instant": true},
