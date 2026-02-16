@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-NOSWEB_VERSION="0.02.28"
+NOSWEB_VERSION="0.02.29"
 echo "v${NOSWEB_VERSION}"
 sleep 3
 # =============================================================================
@@ -500,6 +500,31 @@ INFOHDR
         echo "nosweb_host_info{gpu=\"0\",wallet=\"${wallet}\"} 1" >> "$tmp"
     fi
 
+    # NIC speed: detect default route interface, read negotiated link speed
+    local nic_iface nic_speed
+    nic_iface=$(ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -1)
+    if [ -n "$nic_iface" ] && [ -f "/sys/class/net/${nic_iface}/speed" ]; then
+        nic_speed=$(cat "/sys/class/net/${nic_iface}/speed" 2>/dev/null || echo "0")
+        # speed returns -1 for virtual/disconnected interfaces
+        [ "$nic_speed" -lt 0 ] 2>/dev/null && nic_speed="0"
+    else
+        nic_speed="0"
+    fi
+    cat >> "$tmp" << NICHDR
+# HELP nosweb_nic_speed_mbps Negotiated NIC speed in Mbps for default route interface
+# TYPE nosweb_nic_speed_mbps gauge
+nosweb_nic_speed_mbps{iface="${nic_iface:-unknown}"} ${nic_speed}
+NICHDR
+
+    # Container count
+    local running
+    running=$(docker ps --filter "name=NOSweb" --format '{{.Names}}' 2>/dev/null | wc -l)
+    cat >> "$tmp" << CNTHDR
+# HELP nosweb_containers_running Number of NOSweb containers currently running
+# TYPE nosweb_containers_running gauge
+nosweb_containers_running ${running}
+CNTHDR
+
     chmod 644 "$tmp"
     mv "$tmp" "${INFO_METRICS}"
 }
@@ -920,14 +945,15 @@ generate_host_dashboard() {
     },
     {
       "id": 5, "type": "stat", "title": "NOSweb Stack",
-      "description": "Monitoring stack overhead. RAM/CPU: Prometheus+Grafana processes. TSDB: Prometheus storage on disk (15d retention). Net: Prometheus HTTP scrape traffic.",
+      "description": "Monitoring stack overhead. RAM/CPU: Prometheus+Grafana processes. TSDB: Prometheus storage on disk (15d retention). Net: Prometheus HTTP scrape traffic. Containers: NOSweb Docker containers running.",
       "gridPos": {"h": 6, "w": 24, "x": 0, "y": 16},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {"refId": "A", "expr": "sum(process_resident_memory_bytes{job=~\"prometheus|grafana\"}) / 1024 / 1024", "legendFormat": "RAM"},
         {"refId": "B", "expr": "sum(rate(process_cpu_seconds_total{job=~\"prometheus|grafana\"}[2m])) * 100", "legendFormat": "CPU"},
         {"refId": "C", "expr": "prometheus_tsdb_storage_size_bytes / 1024 / 1024", "legendFormat": "TSDB"},
-        {"refId": "D", "expr": "sum(rate(prometheus_http_response_size_bytes_sum[5m]))", "legendFormat": "Net Out"}
+        {"refId": "D", "expr": "sum(rate(prometheus_http_response_size_bytes_sum[5m]))", "legendFormat": "Net Out"},
+        {"refId": "E", "expr": "nosweb_containers_running", "legendFormat": "Containers"}
       ],
       "fieldConfig": {"defaults": {"decimals": 0,
         "thresholds": {"mode": "absolute", "steps": [
@@ -937,7 +963,8 @@ generate_host_dashboard() {
           {"matcher": {"id": "byName", "options": "RAM"}, "properties": [{"id": "unit", "value": "decmbytes"}]},
           {"matcher": {"id": "byName", "options": "CPU"}, "properties": [{"id": "unit", "value": "percent"}, {"id": "decimals", "value": 1}]},
           {"matcher": {"id": "byName", "options": "TSDB"}, "properties": [{"id": "unit", "value": "decmbytes"}, {"id": "thresholds", "value": {"mode": "absolute", "steps": [{"value": null, "color": "green"}, {"value": 500, "color": "yellow"}, {"value": 1000, "color": "red"}]}}]},
-          {"matcher": {"id": "byName", "options": "Net Out"}, "properties": [{"id": "unit", "value": "Bps"}, {"id": "thresholds", "value": {"mode": "absolute", "steps": [{"value": null, "color": "green"}, {"value": 102400, "color": "yellow"}, {"value": 1048576, "color": "red"}]}}]}
+          {"matcher": {"id": "byName", "options": "Net Out"}, "properties": [{"id": "unit", "value": "Bps"}, {"id": "thresholds", "value": {"mode": "absolute", "steps": [{"value": null, "color": "green"}, {"value": 102400, "color": "yellow"}, {"value": 1048576, "color": "red"}]}}]},
+          {"matcher": {"id": "byName", "options": "Containers"}, "properties": [{"id": "unit", "value": "short"}, {"id": "thresholds", "value": {"mode": "absolute", "steps": [{"value": null, "color": "red"}, {"value": 5, "color": "green"}]}}]}
         ]},
       "options": {"graphMode": "area", "colorMode": "value", "textMode": "auto",
         "reduceOptions": {"calcs": ["lastNotNull"]}}
@@ -979,14 +1006,15 @@ generate_fleet_dashboard() {
   "panels": [
     {
       "id": 3, "type": "stat", "title": "NOSweb Stack",
-      "description": "Monitoring stack overhead. RAM/CPU: Prometheus+Grafana. TSDB: Prometheus storage (15d retention). Net: scrape traffic.",
+      "description": "Monitoring stack overhead. RAM/CPU: Prometheus+Grafana. TSDB: Prometheus storage (15d retention). Net: scrape traffic. Containers: NOSweb Docker containers running.",
       "gridPos": {"h": 4, "w": 24, "x": 0, "y": 0},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {"refId": "A", "expr": "sum(process_resident_memory_bytes{job=~\"prometheus|grafana\"}) / 1024 / 1024", "legendFormat": "RAM"},
         {"refId": "B", "expr": "sum(rate(process_cpu_seconds_total{job=~\"prometheus|grafana\"}[2m])) * 100", "legendFormat": "CPU"},
         {"refId": "C", "expr": "prometheus_tsdb_storage_size_bytes / 1024 / 1024", "legendFormat": "TSDB"},
-        {"refId": "D", "expr": "sum(rate(prometheus_http_response_size_bytes_sum[5m]))", "legendFormat": "Net Out"}
+        {"refId": "D", "expr": "sum(rate(prometheus_http_response_size_bytes_sum[5m]))", "legendFormat": "Net Out"},
+        {"refId": "E", "expr": "nosweb_containers_running", "legendFormat": "Containers"}
       ],
       "fieldConfig": {"defaults": {"decimals": 0,
         "thresholds": {"mode": "absolute", "steps": [
@@ -996,7 +1024,8 @@ generate_fleet_dashboard() {
           {"matcher": {"id": "byName", "options": "RAM"}, "properties": [{"id": "unit", "value": "decmbytes"}]},
           {"matcher": {"id": "byName", "options": "CPU"}, "properties": [{"id": "unit", "value": "percent"}, {"id": "decimals", "value": 1}]},
           {"matcher": {"id": "byName", "options": "TSDB"}, "properties": [{"id": "unit", "value": "decmbytes"}, {"id": "thresholds", "value": {"mode": "absolute", "steps": [{"value": null, "color": "green"}, {"value": 500, "color": "yellow"}, {"value": 1000, "color": "red"}]}}]},
-          {"matcher": {"id": "byName", "options": "Net Out"}, "properties": [{"id": "unit", "value": "Bps"}, {"id": "thresholds", "value": {"mode": "absolute", "steps": [{"value": null, "color": "green"}, {"value": 102400, "color": "yellow"}, {"value": 1048576, "color": "red"}]}}]}
+          {"matcher": {"id": "byName", "options": "Net Out"}, "properties": [{"id": "unit", "value": "Bps"}, {"id": "thresholds", "value": {"mode": "absolute", "steps": [{"value": null, "color": "green"}, {"value": 102400, "color": "yellow"}, {"value": 1048576, "color": "red"}]}}]},
+          {"matcher": {"id": "byName", "options": "Containers"}, "properties": [{"id": "unit", "value": "short"}, {"id": "thresholds", "value": {"mode": "absolute", "steps": [{"value": null, "color": "red"}, {"value": 5, "color": "green"}]}}]}
         ]},
       "options": {"graphMode": "none", "colorMode": "value", "textMode": "auto", "orientation": "horizontal",
         "reduceOptions": {"calcs": ["lastNotNull"]},
@@ -1020,17 +1049,19 @@ generate_fleet_dashboard() {
         {"refId": "J", "expr": "max by (host, gpu)(nosweb_sol_balance)", "format": "table", "instant": true},
         {"refId": "K", "expr": "max by (host, gpu)(nosweb_nos_staked)", "format": "table", "instant": true},
         {"refId": "L", "expr": "max by (host, gpu)(nosweb_nos_balance)", "format": "table", "instant": true},
-        {"refId": "M", "expr": "max by (host, gpu)(DCGM_FI_DEV_PSTATE)", "format": "table", "instant": true}
+        {"refId": "M", "expr": "max by (host, gpu)(DCGM_FI_DEV_PSTATE)", "format": "table", "instant": true},
+        {"refId": "N", "expr": "max by (host)(nosweb_nic_speed_mbps)", "format": "table", "instant": true}
       ],
       "transformations": [
         {"id": "merge", "options": {}},
         {"id": "organize", "options": {
-          "excludeByName": {"Time": true, "Time 1": true, "Time 2": true, "Time 3": true, "Time 4": true, "Time 5": true, "Time 6": true, "Time 7": true, "Time 8": true, "Time 9": true, "Time 10": true, "Time 11": true, "Time 12": true, "Time 13": true, "modelName": true, "Value #F": true, "Value #G": true},
-          "indexByName": {"wallet_short": 0, "wallet": 1, "host": 2, "gpu": 3, "model": 4, "Value #H": 5, "Value #M": 6, "Value #A": 7, "Value #B": 8, "Value #C": 9, "Value #D": 10, "Value #E": 11, "Value #I": 12, "Value #J": 13, "Value #K": 14, "Value #L": 15},
+          "excludeByName": {"Time": true, "Time 1": true, "Time 2": true, "Time 3": true, "Time 4": true, "Time 5": true, "Time 6": true, "Time 7": true, "Time 8": true, "Time 9": true, "Time 10": true, "Time 11": true, "Time 12": true, "Time 13": true, "Time 14": true, "modelName": true, "Value #F": true, "Value #G": true, "iface": true},
+          "indexByName": {"wallet_short": 0, "wallet": 1, "host": 2, "Value #N": 3, "gpu": 4, "model": 5, "Value #H": 6, "Value #M": 7, "Value #A": 8, "Value #B": 9, "Value #C": 10, "Value #D": 11, "Value #E": 12, "Value #I": 13, "Value #J": 14, "Value #K": 15, "Value #L": 16},
           "renameByName": {
             "wallet_short": "Explorer",
             "wallet": "wallet",
             "host": "PC",
+            "Value #N": "NIC",
             "gpu": "GPUid",
             "model": "Model",
             "Value #H": "Bus",
@@ -1071,6 +1102,24 @@ generate_fleet_dashboard() {
             "properties": [
               {"id": "custom.width", "value": 55},
               {"id": "custom.align", "value": "left"}
+            ]
+          },
+          {
+            "matcher": {"id": "byName", "options": "NIC"},
+            "properties": [
+              {"id": "custom.width", "value": 50},
+              {"id": "custom.cellOptions", "value": {"type": "color-text"}},
+              {"id": "mappings", "value": [{"type": "value", "options": {
+                "0": {"text": "?"},
+                "100": {"text": "100M", "color": "orange"},
+                "1000": {"text": "1G", "color": "green"},
+                "2500": {"text": "2.5G", "color": "green"},
+                "5000": {"text": "5G", "color": "green"},
+                "10000": {"text": "10G", "color": "super-light-green"}
+              }}]},
+              {"id": "thresholds", "value": {"mode": "absolute", "steps": [
+                {"value": null, "color": "#555555"}
+              ]}}
             ]
           },
           {
@@ -1283,10 +1332,11 @@ generate_event_log_dashboard() {
       "transformations": [
         {"id": "organize", "options": {
           "excludeByName": {"Time": true, "__name__": true, "instance": true, "job": true},
-          "indexByName": {"pc": 0, "gpuid": 1, "event": 2, "started": 3, "ended": 4, "duration": 5, "status": 6, "Value": 7},
+          "indexByName": {"pc": 0, "gpuid": 1, "model": 2, "event": 3, "started": 4, "ended": 5, "duration": 6, "status": 7, "Value": 8},
           "renameByName": {
             "pc": "PC",
             "gpuid": "GPUid",
+            "model": "Model",
             "event": "Event",
             "started": "Started",
             "ended": "Ended",
@@ -1304,6 +1354,7 @@ generate_event_log_dashboard() {
           {"matcher": {"id": "byName", "options": "sort_ts"}, "properties": [{"id": "custom.hidden", "value": true}]},
           {"matcher": {"id": "byName", "options": "PC"}, "properties": [{"id": "custom.width", "value": 80}]},
           {"matcher": {"id": "byName", "options": "GPUid"}, "properties": [{"id": "custom.width", "value": 55}, {"id": "custom.align", "value": "center"}]},
+          {"matcher": {"id": "byName", "options": "Model"}, "properties": [{"id": "custom.width", "value": 105}]},
           {
             "matcher": {"id": "byName", "options": "Event"},
             "properties": [
@@ -1753,7 +1804,7 @@ format_duration() {
 }
 
 check_throttle_type() {
-    local gpu="$1" etype="$2" active="$3" now="$4"
+    local gpu="$1" etype="$2" active="$3" now="$4" model="$5"
     local key="${gpu}|${etype}"
     local was_active=0 start_ts=""
 
@@ -1763,8 +1814,8 @@ check_throttle_type() {
     fi
 
     if [ "$active" -gt 0 ] && [ "$was_active" -eq 0 ]; then
-        echo "${key}|${now}" >> "$EVENT_STATE"
-        log "EVENT: ${etype} started on GPU${gpu}"
+        echo "${key}|${now}|${model}" >> "$EVENT_STATE"
+        log "EVENT: ${etype} started on GPU${gpu} (${model})"
     elif [ "$active" -eq 0 ] && [ "$was_active" -eq 1 ]; then
         local dur=$((now - start_ts))
         local dur_fmt
@@ -1772,39 +1823,50 @@ check_throttle_type() {
         local start_fmt end_fmt
         start_fmt=$(date -d "@${start_ts}" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "${start_ts}")
         end_fmt=$(date -d "@${now}" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "${now}")
-        echo "${start_ts}|${now}|${MY_HOST}|${gpu}|${etype}|${start_fmt}|${end_fmt}|${dur_fmt}|resolved" >> "$EVENT_LOG"
+        echo "${start_ts}|${now}|${MY_HOST}|${gpu}|${model}|${etype}|${start_fmt}|${end_fmt}|${dur_fmt}|resolved" >> "$EVENT_LOG"
         local tmp_st
         tmp_st=$(mktemp -p /tmp)
         grep -v "^${key}|" "$EVENT_STATE" > "$tmp_st" 2>/dev/null || true
         mv "$tmp_st" "$EVENT_STATE"
-        log "EVENT: ${etype} resolved on GPU${gpu} (${dur_fmt})"
+        log "EVENT: ${etype} resolved on GPU${gpu} (${model}) (${dur_fmt})"
     fi
 }
 
 track_throttle_events() {
-    local metrics tmp_thr
+    local tmp_thr tmp_dcgm
     tmp_thr="/tmp/throttle_check"
-    wget -q -T 3 -O - "http://NOSweb-dcgm:9400/metrics" 2>/dev/null | \
-        grep '^DCGM_FI_DEV_CLOCK_THROTTLE_REASONS{' > "$tmp_thr" 2>/dev/null || return
-    [ -s "$tmp_thr" ] || return
+    tmp_dcgm="/tmp/dcgm_all"
+    wget -q -T 3 -O - "http://NOSweb-dcgm:9400/metrics" > "$tmp_dcgm" 2>/dev/null || return
+    grep '^DCGM_FI_DEV_CLOCK_THROTTLE_REASONS{' "$tmp_dcgm" > "$tmp_thr" 2>/dev/null
+    [ -s "$tmp_thr" ] || { rm -f "$tmp_dcgm" "$tmp_thr"; return; }
+
+    # Build gpu->model map
+    local gpu_models="/tmp/gpu_model_map"
+    grep '^DCGM_FI_DEV_GPU_TEMP{' "$tmp_dcgm" | \
+        sed -n 's/.*gpu="\([0-9]*\)".*modelName="\([^"]*\)".*/\1|\2/p' | \
+        sed 's/NVIDIA //;s/GeForce //' > "$gpu_models" 2>/dev/null || true
+    rm -f "$tmp_dcgm"
+
     local now
     now=$(date +%s)
 
     while IFS= read -r line; do
-        local gpu val
+        local gpu val model
         gpu=$(echo "$line" | grep -o 'gpu="[0-9]*"' | grep -o '[0-9]*')
         val=$(echo "$line" | awk '{print int($NF)}')
         [ -z "$gpu" ] || [ -z "$val" ] && continue
+        model=$(grep "^${gpu}|" "$gpu_models" 2>/dev/null | head -1 | cut -d'|' -f2)
+        [ -z "$model" ] && model="GPU${gpu}"
 
         local pwr=$(( (val / 4) % 2 ))
         local thermal=$(( ((val / 8) % 2) | ((val / 32) % 2) | ((val / 64) % 2) ))
         local brake=$(( (val / 128) % 2 ))
 
-        check_throttle_type "$gpu" "Pwr Limit" "$pwr" "$now"
-        check_throttle_type "$gpu" "Heat" "$thermal" "$now"
-        check_throttle_type "$gpu" "HW Brake" "$brake" "$now"
+        check_throttle_type "$gpu" "Pwr Limit" "$pwr" "$now" "$model"
+        check_throttle_type "$gpu" "Heat" "$thermal" "$now" "$model"
+        check_throttle_type "$gpu" "HW Brake" "$brake" "$now" "$model"
     done < "$tmp_thr"
-    rm -f "$tmp_thr"
+    rm -f "$tmp_thr" "$gpu_models"
     write_event_metrics
 }
 
@@ -1818,27 +1880,29 @@ write_event_metrics() {
 # TYPE nosweb_event gauge
 EVTHDR
 
-    # Active events
+    # Active events (format: gpu|etype|start_ts|model)
     if [ -s "$EVENT_STATE" ]; then
-        local gpu etype start_ts dur dur_fmt start_fmt
-        while IFS='|' read -r gpu etype start_ts; do
+        local gpu etype start_ts model dur dur_fmt start_fmt
+        while IFS='|' read -r gpu etype start_ts model; do
             [ -z "$gpu" ] && continue
+            [ -z "$model" ] && model="unknown"
             dur=$((now - start_ts))
             dur_fmt=$(format_duration "$dur")
             start_fmt=$(date -d "@${start_ts}" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "${start_ts}")
-            printf 'nosweb_event{pc="%s",gpuid="%s",event="%s",started="%s",ended="",duration="%s",status="active"} %s\n' \
-                "$MY_HOST" "$gpu" "$etype" "$start_fmt" "$dur_fmt" "$start_ts" >> "$tmp"
+            printf 'nosweb_event{pc="%s",gpuid="%s",model="%s",event="%s",started="%s",ended="",duration="%s",status="active"} %s\n' \
+                "$MY_HOST" "$gpu" "$model" "$etype" "$start_fmt" "$dur_fmt" "$start_ts" >> "$tmp"
         done < "$EVENT_STATE"
     fi
 
-    # Resolved events (last 200, within 7 days)
+    # Resolved events (format: sts|ets|pc|gpuid|model|etype|sfmt|efmt|dfmt|status)
     if [ -s "$EVENT_LOG" ]; then
         local cutoff=$((now - 604800))
-        tail -200 "$EVENT_LOG" | while IFS='|' read -r sts ets pc gpuid etype sfmt efmt dfmt status; do
+        tail -200 "$EVENT_LOG" | while IFS='|' read -r sts ets pc gpuid model etype sfmt efmt dfmt status; do
             [ -z "$sts" ] && continue
             [ "$sts" -lt "$cutoff" ] 2>/dev/null && continue
-            printf 'nosweb_event{pc="%s",gpuid="%s",event="%s",started="%s",ended="%s",duration="%s",status="%s"} %s\n' \
-                "$pc" "$gpuid" "$etype" "$sfmt" "$efmt" "$dfmt" "$status" "$sts" >> "$tmp"
+            [ -z "$model" ] && model="unknown"
+            printf 'nosweb_event{pc="%s",gpuid="%s",model="%s",event="%s",started="%s",ended="%s",duration="%s",status="%s"} %s\n' \
+                "$pc" "$gpuid" "$model" "$etype" "$sfmt" "$efmt" "$dfmt" "$status" "$sts" >> "$tmp"
         done
     fi
 
