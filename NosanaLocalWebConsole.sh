@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-NOSWEB_VERSION="0.02.25"
+NOSWEB_VERSION="0.02.26"
 echo "v${NOSWEB_VERSION}"
 sleep 3
 # =============================================================================
@@ -120,6 +120,7 @@ PROXY_ENTRYPOINT="${CONFIG_DIR}/proxy-entrypoint.sh"
 INFO_METRICS="${CONFIG_DIR}/info_metrics"
 WALLET_FILE="${CONFIG_DIR}/.wallet"
 GPU_WALLETS_FILE="${CONFIG_DIR}/gpu_wallets"
+STK_CACHE_FILE="${CONFIG_DIR}/stk_cache"
 SCANNER_PID_FILE="${CONFIG_DIR}/.wallet_scanner.pid"
 HOME_DASH_FILE="${CONFIG_DIR}/.home_dashboard"
 
@@ -937,10 +938,27 @@ generate_fleet_dashboard() {
   "version": 1,
   "refresh": "10s",
   "time": {"from": "now-15m", "to": "now"},
+  "templating": {
+    "list": [
+      {
+        "name": "throttle_window",
+        "type": "custom",
+        "label": "Throttle Window",
+        "current": {"text": "15m", "value": "15m"},
+        "options": [
+          {"text": "5m", "value": "5m", "selected": false},
+          {"text": "15m", "value": "15m", "selected": true},
+          {"text": "1h", "value": "1h", "selected": false},
+          {"text": "6h", "value": "6h", "selected": false}
+        ],
+        "query": "5m,15m,1h,6h"
+      }
+    ]
+  },
   "panels": [
     {
       "id": 1, "type": "table", "title": "GPU Fleet Status",
-      "description": "One row per GPU across fleet. Perf=P-state (P0=max, P8=idle).\\n\\nThrottle (15m lookback):\\n  ok = no throttle\\n  Pwr Limit (orange) = normal, GPU hitting configured power cap\\n  Heat Throttle! (red) = thermal slowdown, check airflow/dust/spacing\\n  HW Pwr Brake! (red) = PSU/cable issue, needs immediate attention\\n  Combined states shown when multiple throttles active\\n\\nSOL/STK/NOS update every 5m via Solana RPC. Footer shows fleet totals.",
+      "description": "One row per GPU across fleet. Perf=P-state (P0=max, P8=idle).\\n\\nThrottle (lookback controlled by dropdown above):\\n  ok = no throttle\\n  Pwr Limit (orange) = normal, GPU hitting configured power cap\\n  Heat Throttle! (red) = thermal slowdown, check airflow/dust/spacing\\n  HW Pwr Brake! (red) = PSU/cable issue, needs immediate attention\\n  Combined states shown when multiple throttles active\\n  Set dropdown to 5m to clear old events quickly.\\n\\nSOL/STK/NOS update every 5m via Solana RPC. Footer shows fleet totals.",
       "gridPos": {"h": 14, "w": 24, "x": 0, "y": 0},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
@@ -948,7 +966,7 @@ generate_fleet_dashboard() {
         {"refId": "B", "expr": "max by (host, gpu)(DCGM_FI_DEV_GPU_TEMP)", "format": "table", "instant": true},
         {"refId": "C", "expr": "max by (host, gpu)(DCGM_FI_DEV_POWER_USAGE) / max by (host, gpu)(DCGM_FI_DEV_POWER_MGMT_LIMIT) * 100", "format": "table", "instant": true},
         {"refId": "D", "expr": "max by (host, gpu)(DCGM_FI_DEV_FAN_SPEED)", "format": "table", "instant": true},
-        {"refId": "E", "expr": "clamp_max(floor(max by (host, gpu)(max_over_time(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS[15m])) / 4) % 2, 1) + clamp_max(floor(max by (host, gpu)(max_over_time(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS[15m])) / 128) % 2, 1) * 4 + clamp_max(clamp_max(floor(max by (host, gpu)(max_over_time(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS[15m])) / 8) % 2, 1) + clamp_max(floor(max by (host, gpu)(max_over_time(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS[15m])) / 32) % 2, 1) + clamp_max(floor(max by (host, gpu)(max_over_time(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS[15m])) / 64) % 2, 1), 1) * 2", "format": "table", "instant": true},
+        {"refId": "E", "expr": "clamp_max(floor(max by (host, gpu)(max_over_time(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS[$throttle_window])) / 4) % 2, 1) + clamp_max(floor(max by (host, gpu)(max_over_time(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS[$throttle_window])) / 128) % 2, 1) * 4 + clamp_max(clamp_max(floor(max by (host, gpu)(max_over_time(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS[$throttle_window])) / 8) % 2, 1) + clamp_max(floor(max by (host, gpu)(max_over_time(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS[$throttle_window])) / 32) % 2, 1) + clamp_max(floor(max by (host, gpu)(max_over_time(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS[$throttle_window])) / 64) % 2, 1), 1) * 2", "format": "table", "instant": true},
         {"refId": "F", "expr": "label_replace(max by (host, gpu, modelName)(DCGM_FI_DEV_GPU_TEMP * 0 + 1), \"model\", \"$1\", \"modelName\", \"(?:NVIDIA )?(?:GeForce )?(.+)\")", "format": "table", "instant": true},
         {"refId": "G", "expr": "label_replace(max by (host, gpu, wallet)(nosweb_host_info), \"wallet_short\", \"$1...\", \"wallet\", \"^(.{5}).*\")", "format": "table", "instant": true},
         {"refId": "H", "expr": "max by (host, gpu)(max_over_time(DCGM_FI_DEV_PCIE_LINK_GEN[24h])) * 100 + max by (host, gpu)(max_over_time(DCGM_FI_DEV_PCIE_LINK_WIDTH[24h]))", "format": "table", "instant": true},
@@ -1189,6 +1207,34 @@ generate_fleet_dashboard() {
         "footer": {"show": true, "reducer": ["sum"], "fields": ["SOL", "STK", "NOS"], "countRows": true},
         "sortBy": [{"displayName": "PC", "desc": false}]
       }
+    },
+    {
+      "id": 2, "type": "timeseries", "title": "Fleet Event Log",
+      "description": "Throttle events over time per GPU.\\nPower = SW power cap or HW brake. Heat = thermal slowdown.\\nValue 1 = actively throttling during this interval.",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 14},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"refId": "A", "expr": "clamp_max(floor(max by (host, gpu)(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS) / 4) % 2 + floor(max by (host, gpu)(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS) / 128) % 2, 1)", "legendFormat": "{{host}} GPU{{gpu}} Power"},
+        {"refId": "B", "expr": "clamp_max(floor(max by (host, gpu)(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS) / 8) % 2 + floor(max by (host, gpu)(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS) / 32) % 2 + floor(max by (host, gpu)(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS) / 64) % 2, 1)", "legendFormat": "{{host}} GPU{{gpu}} Heat"}
+      ],
+      "fieldConfig": {"defaults": {"decimals": 0, "min": 0, "max": 1, "noValue": "0",
+        "color": {"mode": "palette-classic"},
+        "custom": {"lineWidth": 1, "fillOpacity": 40, "spanNulls": true, "drawStyle": "bars", "stacking": {"mode": "none"},
+          "hideFrom": {"tooltip": false, "viz": false, "legend": false},
+          "thresholdsStyle": {"mode": "off"}
+        },
+        "thresholds": {"mode": "absolute", "steps": [{"value": null, "color": "transparent"}, {"value": 1, "color": "red"}]}
+      },
+        "overrides": [
+          {"matcher": {"id": "byRegexp", "options": "Power"}, "properties": [
+            {"id": "color", "value": {"mode": "fixed", "fixedColor": "orange"}}
+          ]},
+          {"matcher": {"id": "byRegexp", "options": "Heat"}, "properties": [
+            {"id": "color", "value": {"mode": "fixed", "fixedColor": "red"}}
+          ]}
+        ]
+      },
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "list", "placement": "bottom", "calcs": []}}
     }
   ]
 }
@@ -1226,6 +1272,7 @@ TARGETS_FILE="/data/targets/fleet.json"
 SEED_FILE="/data/seed_peers"
 GPU_WALLETS="/data/gpu_wallets"
 GPU_BALANCES="/tmp/gpu_balances"
+STK_CACHE="/data/stk_cache"
 MY_IP="${NOSWEB_IP}"
 MY_HOST="${NOSWEB_HOSTNAME}"
 MY_GROUP="${NOSWEB_GROUP}"
@@ -1245,13 +1292,20 @@ touch "$PEERS_FILE"
 mkdir -p "$(dirname "$TARGETS_FILE")" "$SCAN_DIR"
 
 # ── Initialize GPU balances file (gpu|wallet|sol|nos|stk per line) ──
+# Loads cached STK values from persistent storage so table populates instantly.
 init_gpu_balances() {
     if [ -f "$GPU_WALLETS" ] && [ -s "$GPU_WALLETS" ]; then
-        local gpu wallet
+        local gpu wallet cached_stk
         > "$GPU_BALANCES"
         while IFS='|' read -r gpu wallet; do
             [ -z "$gpu" ] || [ -z "$wallet" ] && continue
-            echo "${gpu}|${wallet}|0|0|0" >> "$GPU_BALANCES"
+            # Look up cached STK for this wallet
+            cached_stk="0"
+            if [ -f "$STK_CACHE" ] && [ -s "$STK_CACHE" ]; then
+                cached_stk=$(grep "^${wallet}|" "$STK_CACHE" 2>/dev/null | head -1 | cut -d'|' -f2)
+                [ -z "$cached_stk" ] && cached_stk="0"
+            fi
+            echo "${gpu}|${wallet}|0|0|${cached_stk}" >> "$GPU_BALANCES"
         done < "$GPU_WALLETS"
     else
         echo "0|unknown|0|0|0" > "$GPU_BALANCES"
@@ -1557,6 +1611,18 @@ fetch_balances() {
     done < "$GPU_BALANCES"
 
     [ -s "$tmp_bal" ] && mv "$tmp_bal" "$GPU_BALANCES" || rm -f "$tmp_bal"
+
+    # Persist STK values to cache (survives container restart)
+    if [ -f "$GPU_BALANCES" ]; then
+        local tmp_stk
+        tmp_stk=$(mktemp -p /data)
+        while IFS='|' read -r gpu wallet sol nos stk; do
+            [ -z "$wallet" ] || [ "$wallet" = "unknown" ] && continue
+            [ -z "$stk" ] && stk="0"
+            echo "${wallet}|${stk}"
+        done < "$GPU_BALANCES" > "$tmp_stk"
+        cat "$tmp_stk" > "$STK_CACHE" && rm -f "$tmp_stk"
+    fi
 
     write_discovery
     write_balance_metrics
@@ -1967,6 +2033,7 @@ launch_proxy() {
         -v "${DISCOVERY_SCRIPT}:/data/discovery.sh:ro"
         -v "${INFO_METRICS}:/data/info_metrics:ro"
         -v "${GPU_WALLETS_FILE}:/data/gpu_wallets:ro"
+        -v "${STK_CACHE_FILE}:/data/stk_cache"
         -v "${PEERS_FILE}:/data/peers.dat"
         -v "${SEED_PEERS_FILE}:/data/seed_peers:ro"
         -v "${PROM_TARGETS}:/data/targets"
@@ -2136,6 +2203,7 @@ main() {
     setup_peers "${peer_args[@]}"
     setup_wallet
     touch "${GPU_WALLETS_FILE}"
+    touch "${STK_CACHE_FILE}"
     # Home dashboard preference
     if [ -n "${home_arg}" ]; then
         case "${home_arg}" in
