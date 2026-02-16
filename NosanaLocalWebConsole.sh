@@ -1,95 +1,102 @@
 #!/usr/bin/env bash
 # Usage: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-NOSWEB_VERSION="0.02.36"
+NOSWEB_VERSION="0.02.35"
 echo "v${NOSWEB_VERSION}"
 sleep 3
 # =============================================================================
 # NOSweb — GPU Host Monitoring Stack
 #
 # Deploys five containers per host. Nothing installed on the host.
-# NOSweb-netdata System metrics (CPU, RAM, disk, network, Docker)
-# NOSweb-dcgm NVIDIA GPU detailed metrics (temp, power, clocks, etc.)
-# NOSweb-prometheus Time-series database — scrapes all metrics
-# NOSweb-grafana Dashboards — the main UI you'll use
-# NOSweb-proxy Nginx auth gateway — single entry point
+#   NOSweb-netdata      System metrics (CPU, RAM, disk, network, Docker)
+#   NOSweb-dcgm         NVIDIA GPU detailed metrics (temp, power, clocks, etc.)
+#   NOSweb-prometheus    Time-series database — scrapes all metrics
+#   NOSweb-grafana       Dashboards — the main UI you'll use
+#   NOSweb-proxy         Nginx auth gateway — single entry point
 #
 # QUICK START (one command, works on any Nosana host):
-# bash <(wget -qO- https://raw.githubusercontent.com/.../NosanaLocalWebConsole.sh)
+#   bash <(wget -qO- https://raw.githubusercontent.com/.../NosanaLocalWebConsole.sh)
 #
 # OPTIONS:
-# --group "my-farm" Assign this host to a named group (default: "Unassigned").
-# Only hosts in the same group see each other.
-# Saved after first run — no need to repeat on reboot.
-# --home fleet|gpu|host Set landing dashboard (default: fleet). Saved.
-# --nologin No password required (open access).
-# --port PORT Public port (default: 19999).
-# --stop Stop and remove all NOSweb containers.
-# --status Show status of all containers.
-# --reset Full reset: delete volumes, clear cache, relaunch.
-# --reset-password Change stored login credentials.
+#   --group "my-farm"     Assign this host to a named group (default: "Unassigned").
+#                         Only hosts in the same group see each other.
+#                         Saved after first run — no need to repeat on reboot.
+#   --home fleet|gpu|host Set landing dashboard (default: fleet). Saved.
+#   --nologin             No password required (open access).
+#   --port PORT           Public port (default: 19999).
+#   --stop                Stop and remove all NOSweb containers.
+#   --status              Show status of all containers.
+#   --reset               Full reset: delete volumes, clear cache, relaunch.
+#   --reset-password      Change stored login credentials.
 #
 # GROUPS:
-# Groups let operators separate hosts into independent sets.
-# Two operators on the same LAN with different group names will never
-# see each other's hosts. If you don't care about groups, do nothing —
-# the default group is "Unassigned" and all hosts see each other.
+#   Groups let operators separate hosts into independent sets.
+#   Two operators on the same LAN with different group names will never
+#   see each other's hosts. If you don't care about groups, do nothing —
+#   the default group is "Unassigned" and all hosts see each other.
 #
 # NETWORKING — HOW HOSTS FIND EACH OTHER (Phase 2+):
-# Hosts on the same local network (LAN) find each other automatically.
-# No setup needed — just run the script on each host.
+#   Hosts on the same local network (LAN) find each other automatically.
+#   No setup needed — just run the script on each host.
 #
-# If you have hosts on DIFFERENT networks (different locations, data
-# centers, subnets, or behind different routers), they cannot discover
-# each other automatically because network broadcasts don't cross
-# router boundaries. In that case, point the remote host at any one
-# host it CAN reach:
+#   If you have hosts on DIFFERENT networks (different locations, data
+#   centers, subnets, or behind different routers), they cannot discover
+#   each other automatically because network broadcasts don't cross
+#   router boundaries. In that case, point the remote host at any one
+#   host it CAN reach:
 #
-# --peer 192.168.0.114
+#     --peer 192.168.0.114
 #
-# That single connection is enough. The remote host learns about all
-# other hosts through the peer, and the peer tells everyone about the
-# new host. You only need ONE --peer flag, not a list of all hosts.
+#   That single connection is enough. The remote host learns about all
+#   other hosts through the peer, and the peer tells everyone about the
+#   new host. You only need ONE --peer flag, not a list of all hosts.
 #
-# Example: You have 10 hosts at home and 2 at a data center.
-# - The 10 home hosts find each other automatically (same LAN).
-# - The 2 data center hosts find each other automatically (same LAN).
-# - Run ONE data center host with: --peer <any-home-host-IP>
-# - Now all 12 hosts can see each other.
+#   Example: You have 10 hosts at home and 2 at a data center.
+#     - The 10 home hosts find each other automatically (same LAN).
+#     - The 2 data center hosts find each other automatically (same LAN).
+#     - Run ONE data center host with: --peer <any-home-host-IP>
+#     - Now all 12 hosts can see each other.
 #
 # AFTER A DOCKER PRUNE:
-# If someone runs "docker system prune --all" or "docker volume prune",
-# just re-run this script. All settings live in ~/.nosana-webui/ on the
-# host filesystem, not in Docker. You will lose chart history but
-# everything else (login, group, dashboards) comes back as it was.
+#   If someone runs "docker system prune --all" or "docker volume prune",
+#   just re-run this script. All settings live in ~/.nosana-webui/ on the
+#   host filesystem, not in Docker. You will lose chart history but
+#   everything else (login, group, dashboards) comes back as it was.
 #
 # =============================================================================
 set -euo pipefail
+
 # -----------------------------------------------------------------------------
 # Config
 # -----------------------------------------------------------------------------
 CONFIG_DIR="${HOME}/.nosana-webui"
 DOCKER_NETWORK="NOSweb-net"
+
 # Container names
 C_NETDATA="NOSweb-netdata"
 C_DCGM="NOSweb-dcgm"
 C_PROMETHEUS="NOSweb-prometheus"
 C_GRAFANA="NOSweb-grafana"
 C_PROXY="NOSweb-proxy"
+
 # Legacy names to clean up
 LEGACY_CONTAINERS="nosana-netdata nosana-proxy nosana-webui"
+
 # Images
 IMG_NETDATA="netdata/netdata:stable"
 IMG_DCGM="nvidia/dcgm-exporter:latest"
 IMG_PROMETHEUS="prom/prometheus:latest"
 IMG_GRAFANA="grafana/grafana:latest"
 IMG_NGINX="nginx:alpine"
+
 # Internal ports (on Docker network, not exposed to host)
 PORT_NETDATA=19999
 PORT_DCGM=9400
 PORT_PROMETHEUS=9090
 PORT_GRAFANA=3000
+
 # Public port (nginx proxy)
 DEFAULT_PORT=19999
+
 # Persistent paths (survive docker prune)
 HTPASSWD_FILE="${CONFIG_DIR}/.htpasswd"
 PASSWORD_FILE="${CONFIG_DIR}/.password"
@@ -103,6 +110,7 @@ GRAFANA_DIR="${CONFIG_DIR}/grafana"
 GRAFANA_PROV="${GRAFANA_DIR}/provisioning"
 GRAFANA_DASH="${GRAFANA_DIR}/dashboards"
 DCGM_COUNTERS="${CONFIG_DIR}/dcgm-counters.csv"
+
 # Discovery (HTTP gossip — no UDP needed)
 PEERS_FILE="${CONFIG_DIR}/peers.dat"
 SEED_PEERS_FILE="${CONFIG_DIR}/.seed_peers"
@@ -116,10 +124,13 @@ STK_CACHE_FILE="${CONFIG_DIR}/stk_cache"
 EVENTS_FILE="${CONFIG_DIR}/events.csv"
 SCANNER_PID_FILE="${CONFIG_DIR}/.wallet_scanner.pid"
 HOME_DASH_FILE="${CONFIG_DIR}/.home_dashboard"
+
 AUTH_VERSION="2"
 DEFAULT_GROUP="Unassigned"
+
 # Runtime flag
 NOLOGIN=false
+
 # Terminal colors
 if [ -t 1 ]; then
     R='\033[0;31m' G='\033[0;32m' Y='\033[1;33m' B='\033[0;34m'
@@ -127,10 +138,12 @@ if [ -t 1 ]; then
 else
     R='' G='' Y='' B='' C_CLR='' BOLD='' NC=''
 fi
-info() { echo -e "${G}[OK]${NC} $*"; }
-warn() { echo -e "${Y}[WARN]${NC} $*"; }
-err() { echo -e "${R}[ERR]${NC} $*"; }
-step() { echo -e "${C_CLR}[....]${NC} $*"; }
+
+info()  { echo -e "${G}[OK]${NC}    $*"; }
+warn()  { echo -e "${Y}[WARN]${NC}  $*"; }
+err()   { echo -e "${R}[ERR]${NC}   $*"; }
+step()  { echo -e "${C_CLR}[....]${NC}  $*"; }
+
 # -----------------------------------------------------------------------------
 # Checks
 # -----------------------------------------------------------------------------
@@ -141,21 +154,25 @@ check_docker() {
     fi
     if ! docker info &>/dev/null 2>&1; then
         err "Docker not running or permission denied."
-        echo " Try: sudo systemctl start docker"
-        echo " Or: sudo usermod -aG docker \$USER (then re-login)"
+        echo "  Try: sudo systemctl start docker"
+        echo "  Or:  sudo usermod -aG docker \$USER  (then re-login)"
         exit 1
     fi
 }
+
 check_gpu() {
     command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null 2>&1
 }
+
 check_nvidia_runtime() {
     docker info 2>/dev/null | grep -qi "nvidia" || \
     command -v nvidia-container-toolkit &>/dev/null || \
     [ -f /usr/bin/nvidia-container-runtime ]
 }
+
 get_hostname() { hostname 2>/dev/null || echo "unknown"; }
 get_ip() { hostname -I 2>/dev/null | awk '{print $1}'; }
+
 # -----------------------------------------------------------------------------
 # Cleanup
 # -----------------------------------------------------------------------------
@@ -169,6 +186,7 @@ cleanup_containers() {
         fi
     done
 }
+
 cleanup_legacy_volumes() {
     for v in netdata-config; do
         if docker volume ls -q 2>/dev/null | grep -q "^${v}$"; then
@@ -177,6 +195,7 @@ cleanup_legacy_volumes() {
         fi
     done
 }
+
 # -----------------------------------------------------------------------------
 # Docker network
 # -----------------------------------------------------------------------------
@@ -187,6 +206,7 @@ ensure_network() {
     fi
     info "Docker network ready."
 }
+
 # -----------------------------------------------------------------------------
 # Config directory
 # -----------------------------------------------------------------------------
@@ -195,6 +215,7 @@ setup_config() {
              "${GRAFANA_PROV}/datasources" "${GRAFANA_PROV}/dashboards" \
              "${GRAFANA_DASH}"
 }
+
 # -----------------------------------------------------------------------------
 # Group
 # -----------------------------------------------------------------------------
@@ -210,6 +231,7 @@ setup_group() {
         info "Group: $(cat "${GROUP_FILE}")"
     fi
 }
+
 # -----------------------------------------------------------------------------
 # Peers (cross-subnet discovery seeds)
 # -----------------------------------------------------------------------------
@@ -236,6 +258,7 @@ setup_peers() {
         info "Seed peers: ${count} (stored in ${SEED_PEERS_FILE})"
     fi
 }
+
 # -----------------------------------------------------------------------------
 # Wallet detection (public address only — private key never stored/logged)
 # -----------------------------------------------------------------------------
@@ -244,6 +267,7 @@ scan_gpu_wallets() {
     # Supports Type A (direct Docker) and Type B (podman-in-docker)
     local tmp_file
     tmp_file=$(mktemp "${GPU_WALLETS_FILE}.XXXXXX" 2>/dev/null || echo "${GPU_WALLETS_FILE}.tmp")
+
     # Type A: nosana-cli running directly in Docker
     local cid wallet gpu
     while read -r cid; do
@@ -253,6 +277,7 @@ scan_gpu_wallets() {
         [ -z "$gpu" ] && gpu="0"
         [ -n "$wallet" ] && echo "${gpu}|${wallet}"
     done < <(docker ps -a --filter ancestor=nosana/nosana-cli:latest -q 2>/dev/null) > "$tmp_file"
+
     # Type B: nosana node inside podman-in-docker
     local podman_cid
     podman_cid=$(docker ps -q --filter name=podman 2>/dev/null | head -1 || true)
@@ -269,6 +294,7 @@ scan_gpu_wallets() {
             fi
         done < <(docker exec podman podman ps -a --format '{{.ID}}\t{{.Names}}\t{{.Image}}' 2>/dev/null || true)
     fi
+
     # Dedup, sort by GPU index, update file only if we found wallets
     local new_file="${GPU_WALLETS_FILE}.new"
     sort -t'|' -k1 -n "$tmp_file" | uniq > "$new_file"
@@ -283,6 +309,7 @@ scan_gpu_wallets() {
     fi
     rm -f "$tmp_file"
 }
+
 setup_wallet() {
     scan_gpu_wallets || true
     if [ -s "${GPU_WALLETS_FILE}" ]; then
@@ -290,7 +317,7 @@ setup_wallet() {
         count=$(wc -l < "${GPU_WALLETS_FILE}")
         info "GPU wallets discovered: ${count}"
         while IFS='|' read -r gpu wallet; do
-            info " GPU ${gpu}: ${wallet:0:8}..."
+            info "  GPU ${gpu}: ${wallet:0:8}..."
         done < "${GPU_WALLETS_FILE}"
     else
         warn "No Nosana containers found — wallet discovery skipped."
@@ -326,6 +353,7 @@ except:sys.exit(1)
         fi
     fi
 }
+
 start_wallet_scanner() {
     # Background daemon: rescans containers every 60s, updates gpu_wallets + info_metrics
     if [ -f "$SCANNER_PID_FILE" ]; then
@@ -343,6 +371,7 @@ start_wallet_scanner() {
     disown 2>/dev/null || true
     info "Wallet scanner started (PID: $!, every 60s)."
 }
+
 # -----------------------------------------------------------------------------
 # Authentication
 # -----------------------------------------------------------------------------
@@ -351,15 +380,16 @@ credentials_are_current() {
     [ -f "${AUTH_VERSION_FILE}" ] && \
     [ "$(cat "${AUTH_VERSION_FILE}" 2>/dev/null)" = "${AUTH_VERSION}" ]
 }
+
 setup_password() {
     if credentials_are_current; then
         local existing_user
         existing_user=$(head -1 "${HTPASSWD_FILE}" | cut -d: -f1)
         echo ""
-        echo -e " ${BOLD}Existing credentials:${NC}"
-        echo -e " User: ${G}${existing_user}${NC}"
-        echo -e " Pass: (stored in ${PASSWORD_FILE})"
-        echo -e " Use --reset-password to change."
+        echo -e "  ${BOLD}Existing credentials:${NC}"
+        echo -e "    User: ${G}${existing_user}${NC}"
+        echo -e "    Pass: (stored in ${PASSWORD_FILE})"
+        echo -e "    Use --reset-password to change."
         echo ""
         return 0
     fi
@@ -369,23 +399,24 @@ setup_password() {
     }
     create_password
 }
+
 create_password() {
     echo ""
-    echo -e "${BOLD} Set up WebUI login${NC}"
-    echo " (You may use your Ubuntu login credentials so you don't forget them.)"
+    echo -e "${BOLD}  Set up WebUI login${NC}"
+    echo "  (You may use your Ubuntu login credentials so you don't forget them.)"
     echo ""
-    read -rp " Username: " input_user
+    read -rp "  Username: " input_user
     local auth_user="${input_user}"
     [ -z "${auth_user}" ] && { err "Username cannot be empty."; create_password; return; }
     echo ""
-    echo " Enter the password you want for the WebUI."
+    echo "  Enter the password you want for the WebUI."
     echo ""
     local auth_pass=""
     while true; do
-        read -rsp " Password: " auth_pass; echo ""
+        read -rsp "  Password: " auth_pass; echo ""
         [ -z "${auth_pass}" ] && { warn "Cannot be empty."; continue; }
         local confirm_pass=""
-        read -rsp " Confirm: " confirm_pass; echo ""
+        read -rsp "  Confirm:  " confirm_pass; echo ""
         [ "${auth_pass}" != "${confirm_pass}" ] && { err "Passwords don't match."; echo ""; continue; }
         break
     done
@@ -400,6 +431,7 @@ create_password() {
     info "Credentials saved for user: ${auth_user}"
     echo ""
 }
+
 # -----------------------------------------------------------------------------
 # Generate DCGM custom counters CSV
 # The default counters are too limited. This adds fan speed, P-State,
@@ -438,8 +470,10 @@ DCGM_FI_DEV_ROW_REMAP_FAILURE, gauge, Row remap failure.
 DCGM_FI_DEV_NVLINK_BANDWIDTH_TOTAL, counter, NVLink total bandwidth.
 DCGM_FI_DEV_VGPU_LICENSE_STATUS, gauge, vGPU license status.
 DCGMEOF
+
     info "DCGM custom counters generated ($(grep -c '^DCGM' "${DCGM_COUNTERS}") fields)."
 }
+
 # -----------------------------------------------------------------------------
 # Generate host info metrics (static file served by nginx for Prometheus)
 # Exposes wallet address as a Prometheus label — no private key involved.
@@ -447,10 +481,12 @@ DCGMEOF
 generate_info_metrics() {
     local tmp
     tmp=$(mktemp "${INFO_METRICS}.XXXXXX" 2>/dev/null || echo "${INFO_METRICS}.tmp")
+
     cat > "$tmp" << 'INFOHDR'
 # HELP nosweb_host_info NOSweb host identity information
 # TYPE nosweb_host_info gauge
 INFOHDR
+
     if [ -s "${GPU_WALLETS_FILE}" ]; then
         local gpu wallet
         while IFS='|' read -r gpu wallet; do
@@ -463,6 +499,7 @@ INFOHDR
         wallet=$(cat "${WALLET_FILE}" 2>/dev/null || echo "unknown")
         echo "nosweb_host_info{gpu=\"0\",wallet=\"${wallet}\"} 1" >> "$tmp"
     fi
+
     # NIC speed: detect default route interface, read negotiated link speed
     local nic_iface nic_speed
     nic_iface=$(ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -1)
@@ -478,6 +515,7 @@ INFOHDR
 # TYPE nosweb_nic_speed_mbps gauge
 nosweb_nic_speed_mbps{iface="${nic_iface:-unknown}"} ${nic_speed}
 NICHDR
+
     # Container count
     local running
     running=$(docker ps --format '{{.Names}}' 2>/dev/null | grep -c '^NOSweb' || true)
@@ -487,30 +525,36 @@ NICHDR
 # TYPE nosweb_containers_running gauge
 nosweb_containers_running ${running}
 CNTHDR
+
     chmod 644 "$tmp"
     mv "$tmp" "${INFO_METRICS}"
 }
+
 # -----------------------------------------------------------------------------
 # Generate Prometheus config
 # -----------------------------------------------------------------------------
 generate_prometheus_config() {
     local my_hostname
     my_hostname=$(get_hostname)
+
     cat > "${PROM_CONF}" << PROMEOF
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
+
 scrape_configs:
   - job_name: 'prometheus'
     static_configs:
       - targets: ['localhost:9090']
         labels:
           host: '${my_hostname}'
+
   - job_name: 'grafana'
     static_configs:
       - targets: ['${C_GRAFANA}:3000']
         labels:
           host: '${my_hostname}'
+
   - job_name: 'netdata'
     metrics_path: '/api/v1/allmetrics'
     params:
@@ -519,21 +563,25 @@ scrape_configs:
     file_sd_configs:
       - files: ['/etc/prometheus/targets/netdata.json']
         refresh_interval: 30s
+
   - job_name: 'dcgm'
     file_sd_configs:
       - files: ['/etc/prometheus/targets/dcgm.json']
         refresh_interval: 30s
+
   - job_name: 'netdata-fleet'
     metrics_path: '/metrics/netdata'
     honor_labels: true
     file_sd_configs:
       - files: ['/etc/prometheus/targets/fleet.json']
         refresh_interval: 30s
+
   - job_name: 'dcgm-fleet'
     metrics_path: '/metrics/dcgm'
     file_sd_configs:
       - files: ['/etc/prometheus/targets/fleet.json']
         refresh_interval: 30s
+
   - job_name: 'nosweb-info'
     metrics_path: '/metrics/info'
     scrape_interval: 60s
@@ -541,24 +589,28 @@ scrape_configs:
       - targets: ['${C_PROXY}:80']
         labels:
           host: '${my_hostname}'
+
   - job_name: 'info-fleet'
     metrics_path: '/metrics/info'
     scrape_interval: 60s
     file_sd_configs:
       - files: ['/etc/prometheus/targets/fleet.json']
         refresh_interval: 30s
+
   - job_name: 'balance'
     metrics_path: '/metrics/balance'
     honor_labels: true
     scrape_interval: 60s
     static_configs:
       - targets: ['${C_PROXY}:80']
+
   - job_name: 'events'
     metrics_path: '/metrics/events'
     honor_labels: true
     scrape_interval: 30s
     static_configs:
       - targets: ['${C_PROXY}:80']
+
   - job_name: 'events-fleet'
     metrics_path: '/metrics/events'
     honor_labels: true
@@ -567,15 +619,19 @@ scrape_configs:
       - files: ['/etc/prometheus/targets/fleet.json']
         refresh_interval: 30s
 PROMEOF
+
     # Phase 1: local targets (container names on Docker network)
     cat > "${PROM_TARGETS}/netdata.json" << TEOF
 [{"targets": ["${C_NETDATA}:${PORT_NETDATA}"], "labels": {"host": "${my_hostname}"}}]
 TEOF
+
     cat > "${PROM_TARGETS}/dcgm.json" << TEOF
 [{"targets": ["${C_DCGM}:${PORT_DCGM}"], "labels": {"host": "${my_hostname}"}}]
 TEOF
+
     info "Prometheus config generated."
 }
+
 # -----------------------------------------------------------------------------
 # Generate Grafana provisioning
 # -----------------------------------------------------------------------------
@@ -591,6 +647,7 @@ datasources:
     uid: prometheus
     editable: true
 DSEOF
+
     cat > "${GRAFANA_PROV}/dashboards/dashboards.yml" << 'DPEOF'
 apiVersion: 1
 providers:
@@ -605,8 +662,10 @@ providers:
       path: /var/lib/grafana/dashboards
       foldersFromFilesStructure: false
 DPEOF
+
     info "Grafana provisioning generated."
 }
+
 # -----------------------------------------------------------------------------
 # Generate Grafana dashboards
 # -----------------------------------------------------------------------------
@@ -827,6 +886,7 @@ generate_gpu_dashboard() {
 }
 GPUEOF
 }
+
 generate_host_dashboard() {
     cat > "${GRAFANA_DASH}/host-overview.json" << 'HOSTEOF'
 {
@@ -915,6 +975,7 @@ generate_host_dashboard() {
 }
 HOSTEOF
 }
+
 generate_fleet_dashboard() {
     cat > "${GRAFANA_DASH}/fleet-overview.json" << 'FLEETEOF'
 {
@@ -987,7 +1048,7 @@ generate_fleet_dashboard() {
     },
     {
       "id": 1, "type": "table", "title": "GPU Fleet Status",
-      "description": "One row per GPU across fleet. Perf=P-state (P0=max, P8=idle).\\n\\nThrottle (lookback controlled by dropdown above):\\n ok = no throttle\\n Pwr Limit (orange) = normal, GPU hitting configured power cap\\n Heat Throttle! (red) = thermal slowdown, check airflow/dust/spacing\\n HW Pwr Brake! (red) = PSU/cable issue, needs immediate attention\\n Combined states shown when multiple throttles active\\n Set dropdown to 1m to clear old events quickly.\\n\\nSOL/STK/NOS update every 60s via Solana RPC. Footer shows fleet totals.",
+      "description": "One row per GPU across fleet. Perf=P-state (P0=max, P8=idle).\\n\\nThrottle (lookback controlled by dropdown above):\\n  ok = no throttle\\n  Pwr Limit (orange) = normal, GPU hitting configured power cap\\n  Heat Throttle! (red) = thermal slowdown, check airflow/dust/spacing\\n  HW Pwr Brake! (red) = PSU/cable issue, needs immediate attention\\n  Combined states shown when multiple throttles active\\n  Set dropdown to 1m to clear old events quickly.\\n\\nSOL/STK/NOS update every 5m via Solana RPC. Footer shows fleet totals.",
       "gridPos": {"h": 14, "w": 24, "x": 0, "y": 2},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
@@ -1261,6 +1322,7 @@ generate_fleet_dashboard() {
 }
 FLEETEOF
 }
+
 generate_event_log_dashboard() {
     cat > "${GRAFANA_DASH}/event-log.json" << 'EVENTEOF'
 {
@@ -1346,6 +1408,7 @@ generate_event_log_dashboard() {
 }
 EVENTEOF
 }
+
 generate_dashboards() {
     generate_gpu_dashboard
     generate_host_dashboard
@@ -1360,6 +1423,7 @@ generate_dashboards() {
     sed -i "s/\"title\": \"Fleet Event Log\"/\"title\": \"Fleet Event Log | NOSweb v${NOSWEB_VERSION}\"/" "${GRAFANA_DASH}/event-log.json"
     info "Grafana dashboards generated."
 }
+
 # -----------------------------------------------------------------------------
 # Generate Discovery script (runs inside proxy container)
 # HTTP gossip — polls peers via /discovery endpoint on port 19999.
@@ -1372,8 +1436,8 @@ generate_discovery_script() {
 #!/bin/sh
 # NOSweb Fleet Discovery — HTTP gossip with per-GPU wallet support
 # Each host scans containers for wallet-to-GPU mapping.
-# Balances fetched from Solana RPC, shared via gossip.
-# INITIAL FETCH + 60s REFRESH: NOS/SOL/STK columns now populate *immediately* on startup.
+# Balances fetched per wallet from Solana RPC, shared via gossip.
+
 PEERS_FILE="/data/peers.dat"
 TARGETS_FILE="/data/targets/fleet.json"
 SEED_FILE="/data/seed_peers"
@@ -1388,13 +1452,16 @@ INTERVAL=30
 OFFLINE_AFTER=180
 SCAN_DIR="/tmp/discovery_scan"
 BALANCE_FILE="/data/targets/balance.prom"
-BALANCE_INTERVAL=60
+BALANCE_INTERVAL=300
 SOLANA_RPC="https://api.mainnet-beta.solana.com"
 NOS_MINT="nosXBVoaCTtYdLvKY6Csb4AC8JCdQKKAaWYtx2ZMoo7"
 NOS_STAKE_PROGRAM="nosScmHY2uR24Zh751PmGj9ww9QRNHewh9H59AfrTJE"
+
 log() { echo "[discovery] $*"; }
+
 touch "$PEERS_FILE"
 mkdir -p "$(dirname "$TARGETS_FILE")" "$SCAN_DIR"
+
 # ── Initialize GPU balances file (gpu|wallet|sol|nos|stk per line) ──
 # Loads cached STK values from persistent storage so table populates instantly.
 init_gpu_balances() {
@@ -1416,6 +1483,7 @@ init_gpu_balances() {
     fi
 }
 init_gpu_balances
+
 # ── Build gpus string for discovery JSON: 0|wallet|sol|nos|stk,1|wallet|... ──
 build_gpus_string() {
     local first=1 result=""
@@ -1429,6 +1497,7 @@ build_gpus_string() {
     fi
     echo "$result"
 }
+
 # ── Write discovery.json ──
 write_discovery() {
     local gpus_str first_wallet first_sol first_nos first_stk
@@ -1446,7 +1515,9 @@ write_discovery() {
 {"host":"${MY_HOST}","ip":"${MY_IP}","group":"${MY_GROUP}","port":${MY_PORT},"version":"${NOSWEB_VERSION:-unknown}","wallet":"${first_wallet}","sol":${first_sol},"nos":${first_nos},"stk":${first_stk},"gpus":"${gpus_str}"}
 IDJSON
 }
+
 write_discovery
+
 # ── Write per-GPU balance metrics for Prometheus ──
 write_balance_metrics() {
     local tmp
@@ -1459,6 +1530,7 @@ write_balance_metrics() {
 # HELP nosweb_nos_staked Staked NOS balance per GPU wallet
 # TYPE nosweb_nos_staked gauge
 BALHEADER
+
     # Own balances (per GPU)
     if [ -f "$GPU_BALANCES" ]; then
         local gpu wallet sol nos stk
@@ -1470,6 +1542,7 @@ BALHEADER
             printf 'nosweb_nos_staked{host="%s",gpu="%s"} %s\n' "$MY_HOST" "$gpu" "${stk:-0}" >> "$tmp"
         done < "$GPU_BALANCES"
     fi
+
     # Peer balances from peers.dat
     local now ip host group port last_seen status gpus_data age
     now=$(date +%s)
@@ -1488,14 +1561,18 @@ BALHEADER
             printf 'nosweb_nos_staked{host="%s",gpu="%s"} %s\n' "$host" "$pgpu" "${pstk:-0}" >> "$tmp"
         done
     done < "$PEERS_FILE"
+
     chmod 644 "$tmp"
     mv "$tmp" "$BALANCE_FILE"
 }
+
 write_balance_metrics
+
 # ── Derive /24 subnet base from own IP ──
 subnet_base() {
     echo "$MY_IP" | sed 's/\.[0-9]*$//'
 }
+
 # ── Write Prometheus file_sd JSON from peers.dat ──
 write_targets() {
     local now tmp first ip host group port last_seen status age
@@ -1522,6 +1599,7 @@ write_targets() {
     chmod 644 "$tmp"
     mv "$tmp" "$TARGETS_FILE"
 }
+
 # ── Process a /discovery JSON response ──
 process_response() {
     local ip="$1" body="$2"
@@ -1535,6 +1613,7 @@ process_response() {
     [ -z "$rport" ] && rport="$MY_PORT"
     [ "$rip" = "$MY_IP" ] && return
     [ "$rgroup" != "$MY_GROUP" ] && return
+
     # Try new gpus field first, fall back to legacy wallet/sol/nos/stk
     rgpus=$(echo "$body" | sed -n 's/.*"gpus"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
     if [ -z "$rgpus" ]; then
@@ -1550,6 +1629,7 @@ process_response() {
         [ -z "$rstk" ] && rstk="0"
         rgpus="0|${rwallet}|${rsol}|${rnos}|${rstk}"
     fi
+
     # Upsert peer: ip|host|group|port|ts|status|gpus_data
     local now tmp
     now=$(date +%s)
@@ -1559,15 +1639,18 @@ process_response() {
     cat "$tmp" > "$PEERS_FILE" && rm -f "$tmp"
     log "peer: ${rhost} (${rip}) gpus=${rgpus}"
 }
+
 # ── Probe a single IP via HTTP ──
 probe_ip() {
     local ip="$1" port="${2:-$MY_PORT}"
     local outfile="${SCAN_DIR}/${ip}"
     wget -q -T 1 -O "$outfile" "http://${ip}:${port}/discovery" 2>/dev/null || rm -f "$outfile"
 }
+
 # ── Gossip round ──
 gossip_round() {
     rm -f "${SCAN_DIR}"/*
+
     # Re-read gpu_wallets in case scanner updated it
     if [ -f "$GPU_WALLETS" ] && [ -s "$GPU_WALLETS" ]; then
         local new_count old_count
@@ -1578,25 +1661,31 @@ gossip_round() {
             log "gpu_wallets changed (${old_count} -> ${new_count}), reinitializing"
         fi
     fi
+
     local base
     base=$(subnet_base)
+
     local i=1
     while [ "$i" -le 254 ]; do
         probe_ip "${base}.${i}" &
         i=$((i + 1))
     done
+
     if [ -f "$SEED_FILE" ]; then
         while IFS= read -r peer; do
             [ -z "$peer" ] && continue
             probe_ip "$peer" &
         done < "$SEED_FILE"
     fi
+
     while IFS='|' read -r ip _ _ port _ _ _; do
         [ -z "$ip" ] && continue
         [ "$ip" = "$MY_IP" ] && continue
         probe_ip "$ip" "$port" &
     done < "$PEERS_FILE"
+
     wait
+
     local changed=0
     for f in "${SCAN_DIR}"/*; do
         [ -f "$f" ] || continue
@@ -1608,15 +1697,18 @@ gossip_round() {
         process_response "$ip" "$body"
         changed=1
     done
+
     write_targets
     write_balance_metrics
     [ "$changed" -eq 1 ] && log "targets updated"
 }
+
 # ── Fetch balance for a single wallet ──
 fetch_wallet_balance() {
     local wallet="$1"
     local sol="0" nos="0" stk="0"
     local resp raw lamports retry
+
     # SOL
     for retry in 1 2; do
         resp=$(wget -q -T 8 -O - \
@@ -1629,6 +1721,7 @@ fetch_wallet_balance() {
         [ -n "$lamports" ] && [ "$lamports" -gt 0 ] 2>/dev/null && \
             sol=$(awk "BEGIN{printf \"%.10f\", $lamports/1000000000}")
     fi
+
     # NOS
     for retry in 1 2; do
         resp=$(wget -q -T 8 -O - \
@@ -1647,6 +1740,7 @@ fetch_wallet_balance() {
                 nos=$(awk "BEGIN{printf \"%.6f\", $raw/1000000}")
         fi
     fi
+
     # STK
     for retry in 1 2; do
         resp=$(wget -q -T 10 -O - \
@@ -1660,16 +1754,21 @@ fetch_wallet_balance() {
         [ -n "$stk_raw" ] && [ "$stk_raw" != "0" ] && \
             stk=$(awk "BEGIN{printf \"%.6f\", $stk_raw/1000000}")
     fi
+
     echo "${sol}|${nos}|${stk}"
 }
+
 # ── Fetch balances for ALL GPU wallets ──
 fetch_balances() {
     [ ! -f "$GPU_BALANCES" ] && return 1
+
     local stagger
     stagger=$((${MY_IP##*.} % 26))
     sleep "$stagger"
+
     local gpu wallet sol nos stk result tmp_bal
     tmp_bal=$(mktemp -p /tmp)
+
     while IFS='|' read -r gpu wallet _sol _nos _stk; do
         [ -z "$gpu" ] || [ -z "$wallet" ] || [ "$wallet" = "unknown" ] && continue
         result=$(fetch_wallet_balance "$wallet")
@@ -1681,7 +1780,9 @@ fetch_balances() {
         # Small delay between wallets to avoid RPC rate limits
         sleep 2
     done < "$GPU_BALANCES"
+
     [ -s "$tmp_bal" ] && mv "$tmp_bal" "$GPU_BALANCES" || rm -f "$tmp_bal"
+
     # Persist STK values to cache (survives container restart)
     if [ -f "$GPU_BALANCES" ]; then
         local tmp_stk
@@ -1693,15 +1794,18 @@ fetch_balances() {
         done < "$GPU_BALANCES" > "$tmp_stk"
         cat "$tmp_stk" > "$STK_CACHE" && rm -f "$tmp_stk"
     fi
+
     write_discovery
     write_balance_metrics
 }
+
 # ── Main loop ──
 # Event tracking state
 EVENT_LOG="/data/events.csv"
 EVENT_STATE="/tmp/throttle_state"
 EVENT_METRICS="/data/targets/events.prom"
 touch "$EVENT_STATE" "$EVENT_LOG"
+
 format_duration() {
     local s="$1"
     local h=$((s / 3600)) m=$(((s % 3600) / 60)) sec=$((s % 60))
@@ -1713,14 +1817,17 @@ format_duration() {
         printf '%ds' "$sec"
     fi
 }
+
 check_throttle_type() {
     local gpu="$1" etype="$2" active="$3" now="$4" model="$5"
     local key="${gpu}|${etype}"
     local was_active=0 start_ts=""
+
     if [ -s "$EVENT_STATE" ]; then
         start_ts=$(grep "^${key}|" "$EVENT_STATE" 2>/dev/null | head -1 | cut -d'|' -f3)
         [ -n "$start_ts" ] && was_active=1
     fi
+
     if [ "$active" -gt 0 ] && [ "$was_active" -eq 0 ]; then
         echo "${key}|${now}|${model}" >> "$EVENT_STATE"
         log "EVENT: ${etype} started on GPU${gpu} (${model})"
@@ -1739,6 +1846,7 @@ check_throttle_type() {
         log "EVENT: ${etype} resolved on GPU${gpu} (${model}) (${dur_fmt})"
     fi
 }
+
 track_throttle_events() {
     local tmp_thr tmp_dcgm
     tmp_thr="/tmp/throttle_check"
@@ -1746,14 +1854,17 @@ track_throttle_events() {
     wget -q -T 3 -O - "http://NOSweb-dcgm:9400/metrics" > "$tmp_dcgm" 2>/dev/null || return
     grep '^DCGM_FI_DEV_CLOCK_THROTTLE_REASONS{' "$tmp_dcgm" > "$tmp_thr" 2>/dev/null
     [ -s "$tmp_thr" ] || { rm -f "$tmp_dcgm" "$tmp_thr"; return; }
+
     # Build gpu->model map
     local gpu_models="/tmp/gpu_model_map"
     grep '^DCGM_FI_DEV_GPU_TEMP{' "$tmp_dcgm" | \
         sed -n 's/.*gpu="\([0-9]*\)".*modelName="\([^"]*\)".*/\1|\2/p' | \
         sed 's/NVIDIA //;s/GeForce //' > "$gpu_models" 2>/dev/null || true
     rm -f "$tmp_dcgm"
+
     local now
     now=$(date +%s)
+
     while IFS= read -r line; do
         local gpu val model
         gpu=$(echo "$line" | grep -o 'gpu="[0-9]*"' | grep -o '[0-9]*')
@@ -1761,9 +1872,11 @@ track_throttle_events() {
         [ -z "$gpu" ] || [ -z "$val" ] && continue
         model=$(grep "^${gpu}|" "$gpu_models" 2>/dev/null | head -1 | cut -d'|' -f2)
         [ -z "$model" ] && model="GPU${gpu}"
+
         local pwr=$(( (val / 4) % 2 ))
         local thermal=$(( ((val / 8) % 2) | ((val / 32) % 2) | ((val / 64) % 2) ))
         local brake=$(( (val / 128) % 2 ))
+
         check_throttle_type "$gpu" "Pwr Limit" "$pwr" "$now" "$model"
         check_throttle_type "$gpu" "Heat" "$thermal" "$now" "$model"
         check_throttle_type "$gpu" "HW Brake" "$brake" "$now" "$model"
@@ -1771,14 +1884,17 @@ track_throttle_events() {
     rm -f "$tmp_thr" "$gpu_models"
     write_event_metrics
 }
+
 write_event_metrics() {
     local tmp now
     tmp=$(mktemp -p "$(dirname "$EVENT_METRICS")")
     now=$(date +%s)
+
     cat > "$tmp" << 'EVTHDR'
 # HELP nosweb_event Throttle event with timestamps in labels
 # TYPE nosweb_event gauge
 EVTHDR
+
     # Active events (format: gpu|etype|start_ts|model)
     if [ -s "$EVENT_STATE" ]; then
         local gpu etype start_ts model dur dur_fmt start_fmt
@@ -1792,6 +1908,7 @@ EVTHDR
                 "$MY_HOST" "$gpu" "$model" "$etype" "$start_fmt" "$dur_fmt" "$start_ts" >> "$tmp"
         done < "$EVENT_STATE"
     fi
+
     # Resolved events — handle both old (9-field) and new (10-field) CSV format
     if [ -s "$EVENT_LOG" ]; then
         local cutoff=$((now - 604800))
@@ -1817,26 +1934,22 @@ EOF
                 "$pc" "$gpuid" "$model" "$etype" "$sfmt" "$efmt" "$dfmt" "$status" "$sts" >> "$tmp"
         done
     fi
+
     chmod 644 "$tmp"
     mv "$tmp" "$EVENT_METRICS"
 }
+
 # Initialize event metrics
 write_event_metrics
+
 log "starting: host=${MY_HOST} ip=${MY_IP} group=${MY_GROUP} port=${MY_PORT}"
 log "mode: per-GPU wallet discovery + gossip balance sharing"
 if [ -f "$GPU_WALLETS" ]; then
     log "gpu_wallets: $(wc -l < "$GPU_WALLETS") entries"
 fi
-# ── QUICK NOS/SOL/STK POPULATION: Initial fetch right at startup ──
-# This ensures the fleet dashboard's NOS column (and SOL/STK) shows LIVE values
-# immediately when the page loads — no more waiting 5 minutes for the first cycle.
-log "initial live balance fetch (NOS/SOL/STK) for instant dashboard population"
-fetch_balances || true
-write_balance_metrics
-log "live balances ready — NOS column will populate in <10s"
 write_targets
-# Set last_balance to current time so the timed refresh kicks in after BALANCE_INTERVAL
-last_balance=$(date +%s)
+
+last_balance=0
 while true; do
     gossip_round
     track_throttle_events
@@ -1847,9 +1960,11 @@ while true; do
     sleep "$INTERVAL"
 done
 DISCEOF
+
     chmod +x "${DISCOVERY_SCRIPT}"
     info "Discovery script generated."
 }
+
 # -----------------------------------------------------------------------------
 # Generate Proxy entrypoint (starts nginx + discovery sidecar)
 # No extra packages needed — wget is built into Alpine nginx.
@@ -1858,11 +1973,14 @@ generate_proxy_entrypoint() {
     cat > "${PROXY_ENTRYPOINT}" << 'ENTRYEOF'
 #!/bin/sh
 # NOSweb Proxy Entrypoint — nginx + fleet discovery in one container
+
 # Start nginx using the official entrypoint (background)
 /docker-entrypoint.sh nginx -g 'daemon off;' &
 NGINX_PID=$!
+
 # Give nginx a moment to start
 sleep 2
+
 # Start discovery sidecar
 if [ -f /data/discovery.sh ]; then
     /data/discovery.sh &
@@ -1871,17 +1989,20 @@ if [ -f /data/discovery.sh ]; then
 else
     echo "[entrypoint] WARNING: discovery.sh not found, running nginx only"
 fi
+
 # Wait — if either exits, container stops
 wait $NGINX_PID
 ENTRYEOF
+
     chmod +x "${PROXY_ENTRYPOINT}"
     info "Proxy entrypoint generated."
 }
+
 # -----------------------------------------------------------------------------
 # Generate Nginx config
 # Key fix: WebSocket upgrade must be conditional (map block in http context).
 # Without this, Grafana's live features break with "Something went wrong".
-# Routes: / → Grafana /netdata/ → Netdata /prometheus/ → Prometheus
+# Routes:  / → Grafana    /netdata/ → Netdata    /prometheus/ → Prometheus
 # -----------------------------------------------------------------------------
 generate_nginx_conf() {
     local auth_block=""
@@ -1890,11 +2011,14 @@ generate_nginx_conf() {
         auth_basic "NOSweb";
         auth_basic_user_file /etc/nginx/.htpasswd;'
     fi
+
     cat > "${NGINX_CONF}" << NGINXEOF
 worker_processes 1;
 error_log /var/log/nginx/error.log warn;
 pid /tmp/nginx.pid;
+
 events { worker_connections 256; }
+
 http {
     # Conditional WebSocket upgrade — required for Grafana live features.
     # Without this map, setting Connection to "upgrade" unconditionally
@@ -1903,17 +2027,21 @@ http {
         default upgrade;
         '' close;
     }
+
     upstream netdata_backend {
         server ${C_NETDATA}:${PORT_NETDATA};
         keepalive 1024;
     }
+
     upstream grafana_backend {
         server ${C_GRAFANA}:${PORT_GRAFANA};
         keepalive 64;
     }
+
     server {
         listen 80;
 ${auth_block}
+
         # Unauthenticated metrics endpoints for fleet Prometheus scraping
         location = /metrics/netdata {
             auth_basic off;
@@ -1940,12 +2068,14 @@ ${auth_block}
             default_type text/plain;
             alias /data/targets/events.prom;
         }
+
         # Fleet discovery endpoint — serves host identity JSON (no auth)
         location = /discovery {
             auth_basic off;
             default_type application/json;
             alias /data/discovery.json;
         }
+
         # Default: Grafana dashboards
         location / {
             proxy_set_header Host \$host;
@@ -1956,15 +2086,18 @@ ${auth_block}
             proxy_http_version 1.1;
             proxy_set_header Upgrade \$http_upgrade;
             proxy_set_header Connection \$connection_upgrade;
+
             # Hide Grafana's "Sign in" button (nginx handles auth, not Grafana)
             proxy_set_header Accept-Encoding "";
             sub_filter_once off;
             sub_filter '</head>' '<style>a[href="/login"],button[aria-label="Sign in"]{display:none!important}</style></head>';
         }
+
         # Netdata at /netdata/ (official subfolder proxy config)
         location = /netdata {
             return 301 /netdata/;
         }
+
         location ~ /netdata/(?<ndpath>.*) {
             proxy_redirect off;
             proxy_set_header Host \$host;
@@ -1980,6 +2113,7 @@ ${auth_block}
             gzip_proxied any;
             gzip_types text/plain text/css application/json application/javascript text/xml;
         }
+
         # Prometheus at /prometheus/
         location /prometheus/ {
             proxy_pass http://${C_PROMETHEUS}:${PORT_PROMETHEUS}/;
@@ -1989,8 +2123,10 @@ ${auth_block}
     }
 }
 NGINXEOF
+
     info "Nginx config generated."
 }
+
 # -----------------------------------------------------------------------------
 # Firewall
 # -----------------------------------------------------------------------------
@@ -2005,6 +2141,7 @@ open_firewall() {
         fi
     fi
 }
+
 # -----------------------------------------------------------------------------
 # Wait for HTTP endpoint
 # -----------------------------------------------------------------------------
@@ -2022,15 +2159,18 @@ wait_for_http() {
     warn "${label} not responding after ${max_wait}s — may still be starting."
     return 1
 }
+
 container_ip() {
     docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$1" 2>/dev/null
 }
+
 # -----------------------------------------------------------------------------
 # Launch containers
 # -----------------------------------------------------------------------------
 launch_netdata() {
     step "Pulling Netdata..."
     docker pull "${IMG_NETDATA}"
+
     step "Launching Netdata..."
     local -a cmd=(
         docker run -d
@@ -2055,6 +2195,7 @@ launch_netdata() {
         -v netdata-lib:/var/lib/netdata
         -v netdata-cache:/var/cache/netdata
     )
+
     if check_nvidia_runtime; then
         info "NVIDIA runtime detected"
         cmd+=(--gpus all)
@@ -2067,23 +2208,28 @@ launch_netdata() {
         smi_path=$(command -v nvidia-smi 2>/dev/null || true)
         [ -n "$smi_path" ] && cmd+=(-v "${smi_path}:${smi_path}:ro")
     fi
+
     cmd+=("${IMG_NETDATA}")
     "${cmd[@]}" && info "Netdata started." || { err "Netdata failed."; return 1; }
+
     local ip; ip=$(container_ip "${C_NETDATA}")
     [ -n "$ip" ] && wait_for_http "http://${ip}:${PORT_NETDATA}/api/v1/info" "Netdata" 40 || true
 }
+
 launch_dcgm() {
     if ! check_nvidia_runtime; then
         warn "NVIDIA runtime not found — skipping DCGM exporter."
         echo '[]' > "${PROM_TARGETS}/dcgm.json"
         return 0
     fi
+
     step "Pulling DCGM exporter..."
     if ! docker pull "${IMG_DCGM}" 2>/dev/null; then
         warn "Could not pull DCGM image — skipping."
         echo '[]' > "${PROM_TARGETS}/dcgm.json"
         return 0
     fi
+
     # Try with custom counters first
     step "Launching DCGM exporter..."
     docker run -d \
@@ -2094,6 +2240,7 @@ launch_dcgm() {
         --cap-add SYS_ADMIN \
         -v "${DCGM_COUNTERS}:/etc/dcgm-exporter/default-counters.csv:ro" \
         "${IMG_DCGM}" 2>/dev/null || true
+
     sleep 6
     local dcgm_ip
     dcgm_ip=$(container_ip "${C_DCGM}" 2>/dev/null)
@@ -2123,9 +2270,11 @@ launch_dcgm() {
         fi
     fi
 }
+
 launch_prometheus() {
     step "Pulling Prometheus..."
     docker pull "${IMG_PROMETHEUS}"
+
     step "Launching Prometheus..."
     docker run -d \
         --name "${C_PROMETHEUS}" \
@@ -2139,16 +2288,20 @@ launch_prometheus() {
         --storage.tsdb.retention.time=15d \
         --web.enable-lifecycle \
     && info "Prometheus started." || { err "Prometheus failed."; return 1; }
+
     local ip; ip=$(container_ip "${C_PROMETHEUS}")
     [ -n "$ip" ] && wait_for_http "http://${ip}:${PORT_PROMETHEUS}/-/ready" "Prometheus" 30 || true
 }
+
 launch_grafana() {
     step "Pulling Grafana..."
     docker pull "${IMG_GRAFANA}"
+
     # Home dashboard: stored preference or default to fleet-overview
     local home_dash
     home_dash=$(cat "${HOME_DASH_FILE}" 2>/dev/null || echo "fleet-overview")
     [ ! -f "${HOME_DASH_FILE}" ] && echo -n "${home_dash}" > "${HOME_DASH_FILE}"
+
     step "Launching Grafana..."
     docker run -d \
         --name "${C_GRAFANA}" \
@@ -2172,16 +2325,20 @@ launch_grafana() {
         -e "GF_SERVER_ROOT_URL=http://localhost:${DEFAULT_PORT}/" \
         "${IMG_GRAFANA}" \
     && info "Grafana started (home: ${home_dash})." || { err "Grafana failed."; return 1; }
+
     local ip; ip=$(container_ip "${C_GRAFANA}")
     [ -n "$ip" ] && wait_for_http "http://${ip}:${PORT_GRAFANA}/api/health" "Grafana" 30 || true
 }
+
 launch_proxy() {
     step "Pulling Nginx..."
     docker pull "${IMG_NGINX}"
+
     local my_ip my_hostname my_group
     my_ip=$(get_ip)
     my_hostname=$(get_hostname)
     my_group=$(cat "${GROUP_FILE}" 2>/dev/null || echo "${DEFAULT_GROUP}")
+
     step "Launching proxy on port ${DEFAULT_PORT}..."
     local -a cmd=(
         docker run -d
@@ -2206,14 +2363,18 @@ launch_proxy() {
         -e "NOSWEB_PORT=${DEFAULT_PORT}"
         -e "NOSWEB_VERSION=${NOSWEB_VERSION}"
     )
+
     [ "${NOLOGIN}" = false ] && [ -f "${HTPASSWD_FILE}" ] && \
         cmd+=(-v "${HTPASSWD_FILE}:/etc/nginx/.htpasswd:ro")
+
     cmd+=("${IMG_NGINX}")
     "${cmd[@]}" && info "Proxy started." || { err "Proxy failed."; return 1; }
+
     # Verify proxy is responding (don't use -f flag — 401 is expected and valid)
     sleep 4
     local code
     code=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${DEFAULT_PORT}/" 2>/dev/null || true)
+
     if [ "${NOLOGIN}" = false ]; then
         if [ "${code}" = "401" ]; then
             info "Auth working — login required."
@@ -2229,6 +2390,7 @@ launch_proxy() {
             warn "Proxy returned HTTP ${code}. Check: docker logs ${C_PROXY}"
         fi
     fi
+
     # Verify discovery sidecar
     sleep 2
     if docker logs "${C_PROXY}" 2>&1 | grep -q "\[discovery\] starting"; then
@@ -2237,6 +2399,7 @@ launch_proxy() {
         warn "Discovery sidecar may not have started. Check: docker logs ${C_PROXY}"
     fi
 }
+
 # -----------------------------------------------------------------------------
 # Stop / Status
 # -----------------------------------------------------------------------------
@@ -2253,39 +2416,41 @@ do_stop() {
     info "Config preserved at ${CONFIG_DIR}"
     info "Re-run this script to relaunch."
 }
+
 do_status() {
     echo ""
     echo -e "${BOLD}NOSweb Status${NC}"
     echo "──────────────────────────────────────"
     if docker info &>/dev/null 2>&1; then
-        echo -e " Docker: ${G}running${NC}"
+        echo -e "  Docker:      ${G}running${NC}"
     else
-        echo -e " Docker: ${R}not running${NC}"
+        echo -e "  Docker:      ${R}not running${NC}"
     fi
     if check_gpu; then
-        echo -e " GPU: ${G}$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)${NC}"
+        echo -e "  GPU:         ${G}$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)${NC}"
     else
-        echo -e " GPU: ${Y}not detected${NC}"
+        echo -e "  GPU:         ${Y}not detected${NC}"
     fi
-    [ -f "${GROUP_FILE}" ] && echo -e " Group: $(cat "${GROUP_FILE}")"
+    [ -f "${GROUP_FILE}" ] && echo -e "  Group:       $(cat "${GROUP_FILE}")"
     echo ""
     for c in "${C_NETDATA}" "${C_DCGM}" "${C_PROMETHEUS}" "${C_GRAFANA}" "${C_PROXY}"; do
         local short="${c#NOSweb-}"
         local pad=$(( 14 - ${#short} ))
         if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${c}$"; then
-            echo -e " ${short}:$(printf '%*s' $pad '') ${G}running${NC}"
+            echo -e "  ${short}:$(printf '%*s' $pad '') ${G}running${NC}"
         elif docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${c}$"; then
-            echo -e " ${short}:$(printf '%*s' $pad '') ${Y}stopped${NC}"
+            echo -e "  ${short}:$(printf '%*s' $pad '') ${Y}stopped${NC}"
         else
-            echo -e " ${short}:$(printf '%*s' $pad '') ${R}not deployed${NC}"
+            echo -e "  ${short}:$(printf '%*s' $pad '') ${R}not deployed${NC}"
         fi
     done
     local ip; ip=$(get_ip)
     echo ""
-    echo -e " Dashboard: ${C_CLR}http://${ip:-localhost}:${DEFAULT_PORT}/${NC}"
-    echo -e " Config: ${CONFIG_DIR}"
+    echo -e "  Dashboard:   ${C_CLR}http://${ip:-localhost}:${DEFAULT_PORT}/${NC}"
+    echo -e "  Config:      ${CONFIG_DIR}"
     echo ""
 }
+
 # -----------------------------------------------------------------------------
 # Main
 # -----------------------------------------------------------------------------
@@ -2295,36 +2460,38 @@ main() {
     local group_arg=""
     local home_arg=""
     local -a peer_args=()
+
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --port) port="$2"; DEFAULT_PORT="$2"; shift 2 ;;
-            --nologin) NOLOGIN=true; shift ;;
-            --group) group_arg="$2"; shift 2 ;;
-            --peer) peer_args+=("$2"); shift 2 ;;
-            --home) home_arg="$2"; shift 2 ;;
-            --stop) action="stop"; shift ;;
-            --status) action="status"; shift ;;
-            --reset-password) action="reset-pw"; shift ;;
-            --reset) action="reset"; shift ;;
+            --port)            port="$2"; DEFAULT_PORT="$2"; shift 2 ;;
+            --nologin)         NOLOGIN=true; shift ;;
+            --group)           group_arg="$2"; shift 2 ;;
+            --peer)            peer_args+=("$2"); shift 2 ;;
+            --home)            home_arg="$2"; shift 2 ;;
+            --stop)            action="stop"; shift ;;
+            --status)          action="status"; shift ;;
+            --reset-password)  action="reset-pw"; shift ;;
+            --reset)           action="reset"; shift ;;
             --help|-h)
                 echo "Usage: $0 [OPTIONS]"
-                echo " --group NAME Group name (default: Unassigned)"
-                echo " --peer IP Cross-subnet peer (repeatable)"
-                echo " --home DASHBOARD Home dashboard: fleet, gpu, host (default: fleet)"
-                echo " --nologin No login required"
-                echo " --port PORT Public port (default: ${DEFAULT_PORT})"
-                echo " --stop Stop all containers"
-                echo " --status Show status"
-                echo " --reset Full reset (delete volumes, relaunch)"
-                echo " --reset-password Change password"
+                echo "  --group NAME       Group name (default: Unassigned)"
+                echo "  --peer IP          Cross-subnet peer (repeatable)"
+                echo "  --home DASHBOARD   Home dashboard: fleet, gpu, host (default: fleet)"
+                echo "  --nologin          No login required"
+                echo "  --port PORT        Public port (default: ${DEFAULT_PORT})"
+                echo "  --stop             Stop all containers"
+                echo "  --status           Show status"
+                echo "  --reset            Full reset (delete volumes, relaunch)"
+                echo "  --reset-password   Change password"
                 exit 0
                 ;;
             *) err "Unknown option: $1"; exit 1 ;;
         esac
     done
+
     case "${action}" in
-        stop) do_stop; exit 0 ;;
-        status) do_status; exit 0 ;;
+        stop)     do_stop; exit 0 ;;
+        status)   do_status; exit 0 ;;
         reset-pw)
             setup_config
             rm -f "${HTPASSWD_FILE}" "${PASSWORD_FILE}" "${AUTH_VERSION_FILE}"
@@ -2344,10 +2511,12 @@ main() {
             action="launch"
             ;;
     esac
+
     # ── Launch ──
     echo ""
-    echo -e "${BOLD}${B} NOSweb — GPU Host Monitoring Stack${NC}"
+    echo -e "${BOLD}${B}  NOSweb — GPU Host Monitoring Stack${NC}"
     echo ""
+
     check_docker
     setup_config
     setup_group "${group_arg}"
@@ -2360,20 +2529,22 @@ main() {
     if [ -n "${home_arg}" ]; then
         case "${home_arg}" in
             fleet) echo -n "fleet-overview" > "${HOME_DASH_FILE}" ;;
-            gpu) echo -n "gpu-overview" > "${HOME_DASH_FILE}" ;;
-            host) echo -n "host-overview" > "${HOME_DASH_FILE}" ;;
-            *) warn "Unknown --home value: ${home_arg}. Use: fleet, gpu, host" ;;
+            gpu)   echo -n "gpu-overview" > "${HOME_DASH_FILE}" ;;
+            host)  echo -n "host-overview" > "${HOME_DASH_FILE}" ;;
+            *)     warn "Unknown --home value: ${home_arg}. Use: fleet, gpu, host" ;;
         esac
     fi
     cleanup_containers
     cleanup_legacy_volumes
     ensure_network
+
     if [ "${NOLOGIN}" = true ]; then
         info "Mode: open access (no login)"
     else
         info "Mode: login required"
         setup_password
     fi
+
     echo ""
     generate_dcgm_counters
     generate_info_metrics
@@ -2384,197 +2555,201 @@ main() {
     generate_discovery_script
     generate_proxy_entrypoint
     echo ""
-    launch_netdata; echo ""
-    launch_dcgm; echo ""
+
+    launch_netdata;   echo ""
+    launch_dcgm;      echo ""
     launch_prometheus; echo ""
-    launch_grafana; echo ""
+    launch_grafana;    echo ""
     launch_proxy
+
     # Re-generate info_metrics now that containers are running (docker count)
     sleep 3
     generate_info_metrics
+
     start_wallet_scanner
+
     open_firewall "${port}"
+
     # ── Summary ──
     local ip; ip=$(get_ip)
     echo ""
     echo -e "${BOLD}════════════════════════════════════════════════════════${NC}"
-    echo -e " ${G}${BOLD}NOSweb is running!${NC}"
+    echo -e "  ${G}${BOLD}NOSweb is running!${NC}"
     echo ""
-    echo -e " ${BOLD}Dashboard:${NC} ${C_CLR}http://${ip:-localhost}:${port}/${NC}"
+    echo -e "  ${BOLD}Dashboard:${NC}   ${C_CLR}http://${ip:-localhost}:${port}/${NC}"
     echo ""
     if [ "${NOLOGIN}" = true ]; then
-        echo -e " ${BOLD}Mode:${NC} Open access (no login)"
+        echo -e "  ${BOLD}Mode:${NC}        Open access (no login)"
     else
         local cred_user
         cred_user=$(head -1 "${HTPASSWD_FILE}" 2>/dev/null | cut -d: -f1)
-        echo -e " ${BOLD}Mode:${NC} Login required"
-        echo -e " ${BOLD}User:${NC} ${G}${cred_user}${NC}"
-        echo -e " ${BOLD}Pass:${NC} (stored in ${PASSWORD_FILE})"
+        echo -e "  ${BOLD}Mode:${NC}        Login required"
+        echo -e "  ${BOLD}User:${NC}        ${G}${cred_user}${NC}"
+        echo -e "  ${BOLD}Pass:${NC}        (stored in ${PASSWORD_FILE})"
     fi
     echo ""
-    echo -e " ${BOLD}Group:${NC} $(cat "${GROUP_FILE}" 2>/dev/null || echo "${DEFAULT_GROUP}")"
-    echo -e " ${BOLD}Discovery:${NC} HTTP gossip (auto-discover LAN + seed peers)"
+    echo -e "  ${BOLD}Group:${NC}       $(cat "${GROUP_FILE}" 2>/dev/null || echo "${DEFAULT_GROUP}")"
+    echo -e "  ${BOLD}Discovery:${NC}   HTTP gossip (auto-discover LAN + seed peers)"
     local seed_count=0
     [ -s "${SEED_PEERS_FILE}" ] && seed_count=$(grep -c . "${SEED_PEERS_FILE}" 2>/dev/null) || true
-    [ "${seed_count:-0}" -gt 0 ] 2>/dev/null && echo -e " ${BOLD}Seed peers:${NC} ${seed_count} (cross-subnet)"
-    echo -e " ${BOLD}Config:${NC} ${CONFIG_DIR}/"
-    echo -e " ${BOLD}Stop:${NC} $0 --stop"
-    echo -e " ${BOLD}Status:${NC} $0 --status"
+    [ "${seed_count:-0}" -gt 0 ] 2>/dev/null && echo -e "  ${BOLD}Seed peers:${NC}  ${seed_count} (cross-subnet)"
+    echo -e "  ${BOLD}Config:${NC}      ${CONFIG_DIR}/"
+    echo -e "  ${BOLD}Stop:${NC}        $0 --stop"
+    echo -e "  ${BOLD}Status:${NC}      $0 --status"
     echo ""
-    echo -e " ${BOLD}Also available behind this URL:${NC}"
-    echo -e " /netdata/ Raw Netdata dashboard"
-    echo -e " /prometheus/ Prometheus query UI"
-    echo -e " /metrics/ Fleet metrics (no auth)"
-    echo -e " /discovery Fleet identity (no auth)"
+    echo -e "  ${BOLD}Also available behind this URL:${NC}"
+    echo -e "    /netdata/       Raw Netdata dashboard"
+    echo -e "    /prometheus/    Prometheus query UI"
+    echo -e "    /metrics/       Fleet metrics (no auth)"
+    echo -e "    /discovery      Fleet identity (no auth)"
     echo -e "${BOLD}════════════════════════════════════════════════════════${NC}"
     echo ""
 }
+
 main "$@"
+
 # =============================================================================
 # NOSweb — Development Notes
 # =============================================================================
 #
 # PHASE 1 (v0.01.x) — COMPLETE
-# Single-host monitoring stack. Five containers: netdata, dcgm-exporter,
-# prometheus, grafana, nginx proxy. GPU Overview dashboard (16 panels),
-# Host Overview dashboard (4 panels). Throttle detection via bitmask.
-# Prometheus self-scraping for stack resource monitoring.
-# DCGM custom counters (30 fields). Anonymous auth disabled.
+#   Single-host monitoring stack. Five containers: netdata, dcgm-exporter,
+#   prometheus, grafana, nginx proxy. GPU Overview dashboard (16 panels),
+#   Host Overview dashboard (4 panels). Throttle detection via bitmask.
+#   Prometheus self-scraping for stack resource monitoring.
+#   DCGM custom counters (30 fields). Anonymous auth disabled.
 #
 # PHASE 2 (v0.02.x) — IN PROGRESS
-# Fleet discovery via HTTP gossip (replaced failed UDP broadcast approach).
-# Persistent peer database. Prometheus file_sd for cross-host scraping.
-# Unauthenticated /metrics/ and /discovery endpoints.
-# Fleet Overview dashboard: compact table with gauge bars per GPU.
-# Status: Discovery works. Cross-host scraping targets generated.
-# TODO: Host selector dropdown on GPU/Host Overview dashboards.
-# TODO: Deduplicate discovery logs (only log state changes).
+#   Fleet discovery via HTTP gossip (replaced failed UDP broadcast approach).
+#   Persistent peer database. Prometheus file_sd for cross-host scraping.
+#   Unauthenticated /metrics/ and /discovery endpoints.
+#   Fleet Overview dashboard: compact table with gauge bars per GPU.
+#   Status: Discovery works. Cross-host scraping targets generated.
+#   TODO: Host selector dropdown on GPU/Host Overview dashboards.
+#   TODO: Deduplicate discovery logs (only log state changes).
 #
 # PHASE 3 (planned)
-# Fleet-wide Grafana dashboards: aggregate GPU stats across all peers.
-# Alerting: thermal throttle notifications, host-down detection.
-# Group-based filtering in dashboards.
+#   Fleet-wide Grafana dashboards: aggregate GPU stats across all peers.
+#   Alerting: thermal throttle notifications, host-down detection.
+#   Group-based filtering in dashboards.
 #
 # DESIGN RULES:
-# - Single file, no external dependencies
-# - Zero host installs (containers only)
-# - set -euo pipefail (strict mode)
-# - Idempotent: re-run safe, --reset for full wipe
-# - Config persists in ~/.nosana-webui/
-# - Heredoc dashboards (single-quoted), version injected via sed
-# - mktemp on same filesystem as target (avoid cross-device mv)
-# - Alpine nginx: wget only (no curl), no jq, no socat
+#   - Single file, no external dependencies
+#   - Zero host installs (containers only)
+#   - set -euo pipefail (strict mode)
+#   - Idempotent: re-run safe, --reset for full wipe
+#   - Config persists in ~/.nosana-webui/
+#   - Heredoc dashboards (single-quoted), version injected via sed
+#   - mktemp on same filesystem as target (avoid cross-device mv)
+#   - Alpine nginx: wget only (no curl), no jq, no socat
 #
 # KNOWN ISSUES:
-# - /api/live/ws 403 (Grafana live WebSocket — cosmetic)
-# - nginx proxy_temp buffering warnings on large assets (cosmetic)
-# - Discovery logs "peer: X online" every 30s even if known (noisy)
-# - Fleet disk panel depends on netdata metric name family="/" — may
-# need adjustment if Netdata labels differ across versions
+#   - /api/live/ws 403 (Grafana live WebSocket — cosmetic)
+#   - nginx proxy_temp buffering warnings on large assets (cosmetic)
+#   - Discovery logs "peer: X online" every 30s even if known (noisy)
+#   - Fleet disk panel depends on netdata metric name family="/" — may
+#     need adjustment if Netdata labels differ across versions
 #
 # CAVEATS & GOTCHAS (hard-won lessons — do not re-learn these):
-# DOCKER:
-# - UDP broadcast from containers stays on Docker bridge — never reaches
-# physical LAN. Port-mapping forwards unicast only. This is why we use
-# HTTP gossip instead of UDP discovery.
-# - mktemp defaults to /tmp (tmpfs). Docker volumes are a different
-# filesystem. mv across filesystems fails on Alpine ("can't rename").
-# Always: mktemp -p /data (or same dir as target file).
-# - Container names must be unique per Docker host. We prefix NOSweb-.
-# ALPINE NGINX:
-# - Has wget, NOT curl. No jq. No socat. No bash (sh only inside container).
-# - sub_filter_types text/html is the default — adding it explicitly
-# causes "duplicate MIME type" warning.
-# - gzip_types * also triggers the duplicate text/html warning.
-# Use explicit type list instead.
-# GRAFANA:
-# - Panel heights are fixed in dashboard JSON — no auto-grow/shrink.
-# Tables scroll when content exceeds panel height. Set generous h values.
-# - Anonymous auth MUST be disabled or it bypasses nginx basic auth
-# entirely. We set GF_AUTH_ANONYMOUS_ENABLED=false.
-# - Heredoc dashboards are single-quoted (no variable expansion).
-# Version and hostname must be injected via sed AFTER generation.
-# - Dashboard UIDs must be stable across re-deploys or bookmarks break.
-# We hardcode: gpu-overview, host-overview, fleet-overview.
-# - Table panel gauge cells: use custom.cellOptions.type "gauge" with
-# mode "gradient" for colored bar-in-cell. Requires Grafana 10+.
-# - Table merge transformation: all queries must share the same label
-# set (e.g. host+gpu) or columns won't align after merge.
-# DCGM:
-# - CSV counter files cannot contain comments or blank lines — the
-# parser treats them as field definitions and fails silently.
-# - Consumer GPUs (GeForce) lack profiling metrics like sm_occupancy,
-# tensor_active, pcie_replay. These return "N/A" or error.
-# We only use universally-supported fields (30 total).
-# - DCGM container needs --cap-add SYS_ADMIN and --gpus all.
-# BASH:
-# - set -euo pipefail means ANY unbound variable crashes the script.
-# Every variable must be defined or use ${VAR:-default}.
-# - wc -l output has leading whitespace on some systems. Use
-# grep -c . file instead, and wrap with ${count:-0}.
-# - Heredocs: single-quoted delimiter ('EOF') = no expansion (safe for
-# JSON with $). Unquoted delimiter (EOF) = variables expand.
-# - File-level bind mounts: mv replaces the inode, breaking the mount.
-# Use cat "$tmp" > "$target" && rm "$tmp" to preserve the inode.
-# Directory-level mounts are fine with mv (atomic rename).
-# - Prometheus runs as uid 65534 (nobody). Any file it reads via
-# bind mount must be world-readable. chmod 644 before mv.
+#   DOCKER:
+#   - UDP broadcast from containers stays on Docker bridge — never reaches
+#     physical LAN. Port-mapping forwards unicast only. This is why we use
+#     HTTP gossip instead of UDP discovery.
+#   - mktemp defaults to /tmp (tmpfs). Docker volumes are a different
+#     filesystem. mv across filesystems fails on Alpine ("can't rename").
+#     Always: mktemp -p /data (or same dir as target file).
+#   - Container names must be unique per Docker host. We prefix NOSweb-.
+#   ALPINE NGINX:
+#   - Has wget, NOT curl. No jq. No socat. No bash (sh only inside container).
+#   - sub_filter_types text/html is the default — adding it explicitly
+#     causes "duplicate MIME type" warning.
+#   - gzip_types * also triggers the duplicate text/html warning.
+#     Use explicit type list instead.
+#   GRAFANA:
+#   - Panel heights are fixed in dashboard JSON — no auto-grow/shrink.
+#     Tables scroll when content exceeds panel height. Set generous h values.
+#   - Anonymous auth MUST be disabled or it bypasses nginx basic auth
+#     entirely. We set GF_AUTH_ANONYMOUS_ENABLED=false.
+#   - Heredoc dashboards are single-quoted (no variable expansion).
+#     Version and hostname must be injected via sed AFTER generation.
+#   - Dashboard UIDs must be stable across re-deploys or bookmarks break.
+#     We hardcode: gpu-overview, host-overview, fleet-overview.
+#   - Table panel gauge cells: use custom.cellOptions.type "gauge" with
+#     mode "gradient" for colored bar-in-cell. Requires Grafana 10+.
+#   - Table merge transformation: all queries must share the same label
+#     set (e.g. host+gpu) or columns won't align after merge.
+#   DCGM:
+#   - CSV counter files cannot contain comments or blank lines — the
+#     parser treats them as field definitions and fails silently.
+#   - Consumer GPUs (GeForce) lack profiling metrics like sm_occupancy,
+#     tensor_active, pcie_replay. These return "N/A" or error.
+#     We only use universally-supported fields (30 total).
+#   - DCGM container needs --cap-add SYS_ADMIN and --gpus all.
+#   BASH:
+#   - set -euo pipefail means ANY unbound variable crashes the script.
+#     Every variable must be defined or use ${VAR:-default}.
+#   - wc -l output has leading whitespace on some systems. Use
+#     grep -c . file instead, and wrap with ${count:-0}.
+#   - Heredocs: single-quoted delimiter ('EOF') = no expansion (safe for
+#     JSON with $). Unquoted delimiter (EOF) = variables expand.
+#   - File-level bind mounts: mv replaces the inode, breaking the mount.
+#     Use cat "$tmp" > "$target" && rm "$tmp" to preserve the inode.
+#     Directory-level mounts are fine with mv (atomic rename).
+#   - Prometheus runs as uid 65534 (nobody). Any file it reads via
+#     bind mount must be world-readable. chmod 644 before mv.
 #
 # CHANGELOG:
-# 0.01.00 Initial Netdata-only deployment
-# 0.01.04 Grafana+Prometheus+DCGM architecture
-# 0.01.10 GPU dashboard: 16 panels, throttle detection, PCIe metrics
-# 0.01.12 DCGM CSV fix, power gauge scaling, fallback mechanism
-# 0.01.16 Throttle redesign (Idle/OK/Throttled!), NOSweb Stack panel
-# 0.02.00 Phase 2: UDP discovery (failed — Docker broadcast limitation)
-# 0.02.01 HTTP gossip migration (partial — missing /discovery endpoint)
-# 0.02.02 /discovery endpoint, version in dashboard titles
-# 0.02.03 Fix DISCOVERY_PORT unbound variable
-# 0.02.04 NOSweb Stack version label, mv cross-device fix, MIME fix
-# 0.02.05 Fleet Overview dashboard: compact GPU table with gauge bars,
-# 15m throttle lookback, host disk usage bar gauge panel
-# 0.02.06 Fix fleet.json always empty — file bind mount inode replaced by mv
-# 0.02.07 Fix fleet.json permission denied — chmod 644 for Prometheus nobody user
-# 0.02.08 Fleet dashboard: GPU Model column via DCGM modelName label_replace
-# 0.02.09 Wallet detection + Explorer column: Nosana wallet address from keypair,
-# /metrics/info endpoint, clickable link to explore.nosana.com
-# 0.02.10 Fleet: PC/GPUid rename+reorder, Bus column (PCIe gen*100+width encoding),
-# throttle type: OK/Power/Heat/P+H, compact sizing, disk as table.
-# GPU Overview: PCIe panel uses same combined format and color scheme.
-# 0.02.11 Compact panel sizing (h=8+4), --home fleet|gpu|host flag,
-# fleet-overview as default landing, throttle labels: Power/Heat.
-# 0.02.12 Empty username prompt (no default), reworded setup tip,
-# fleet panel heights: GPU h=20 (~18 rows), disk h=10 (~8 hosts).
-# 0.02.13 Fleet: SSD gauge column (disk per host), Explorer moved to col 1,
-# removed separate disk panel, h=14, tighter column widths.
-# 0.02.14 Fleet: SSD→Storage, SOL/STK/NOS balance columns via Solana RPC.
-# Discovery script fetches wallet balances every 5m from mainnet.
-# SOL: red<0.0065, orange<0.01, green>=0.01.
-# /metrics/balance endpoint + Prometheus balance scrape jobs.
-# 0.02.15 Bus: Gen1="waiting" grey. NOS: 3 decimals. Throttle OK=dark grey.
-# Temp: dark-green<78/orange<83/red>=83. Fan: dark-green<60/orange<80/red.
-# Power: orange>80/red>95. NOS RPC: retry+fallback, sed-based parsing.
-# 0.02.16 Fix throttle: check ALL DCGM bits (4,128=power; 8,32,64=thermal).
-# Fix NOS parsing: revert to grep (Alpine busybox sed incompatible).
-# Stagger balance fetch by IP to avoid RPC rate limits.
-# GPU Overview: same throttle+PCIe fixes.
-# 0.02.17 Balance via gossip: each host fetches own wallet only, shares
-# balances in discovery.json. Peers pick up balances over LAN.
-# Removed balance-fleet Prometheus job — no cross-host scraping.
-# peers.dat extended: ip|host|group|port|ts|status|sol|nos|stk.
-# 0.02.18 Column renames: GPU Utilization, Temperature, GPU Power, Fan Speed,
-# Storage / Root. Throttle OK→"ok". SOL/STK/NOS: 0→"waiting" grey.
-# Gauges: basic mode (solid color, shorter bars at fixed widths).
-# 0.02.19 Perf column (P-state P0-P12) after Bus. Footer: sum SOL/STK/NOS.
-# Info bubble: operator throttle guidance. Process col deferred (needs sidecar).
-# 0.02.20 Pwr Limit=orange (normal), Heat/HW Brake=red (needs attention).
-# Explorer shows only on GPUid 0 (no repeats per host).
-# Footer: countRows + crypto sums. NOS: 0 decimals.
-# 0.02.21 Pwr Limit=yellow. Explorer reverted to all rows (per-GPU wallet
-# mapping needs docker socket — not available in containers).
-# NOS back to 3 decimals (Grafana footer inherits cell formatting).
-# Combined throttle states: Brake+Pwr, Brake+Heat, Brake+Heat+Pwr.
-# 0.02.35 NOS column fix: 60s refresh + INITIAL FETCH on startup
-#          → NOS (and SOL/STK) now appear with LIVE values in <10 seconds.
-#          → Updated dashboard description to reflect 60s updates.
+#   0.01.00  Initial Netdata-only deployment
+#   0.01.04  Grafana+Prometheus+DCGM architecture
+#   0.01.10  GPU dashboard: 16 panels, throttle detection, PCIe metrics
+#   0.01.12  DCGM CSV fix, power gauge scaling, fallback mechanism
+#   0.01.16  Throttle redesign (Idle/OK/Throttled!), NOSweb Stack panel
+#   0.02.00  Phase 2: UDP discovery (failed — Docker broadcast limitation)
+#   0.02.01  HTTP gossip migration (partial — missing /discovery endpoint)
+#   0.02.02  /discovery endpoint, version in dashboard titles
+#   0.02.03  Fix DISCOVERY_PORT unbound variable
+#   0.02.04  NOSweb Stack version label, mv cross-device fix, MIME fix
+#   0.02.05  Fleet Overview dashboard: compact GPU table with gauge bars,
+#            15m throttle lookback, host disk usage bar gauge panel
+#   0.02.06  Fix fleet.json always empty — file bind mount inode replaced by mv
+#   0.02.07  Fix fleet.json permission denied — chmod 644 for Prometheus nobody user
+#   0.02.08  Fleet dashboard: GPU Model column via DCGM modelName label_replace
+#   0.02.09  Wallet detection + Explorer column: Nosana wallet address from keypair,
+#            /metrics/info endpoint, clickable link to explore.nosana.com
+#   0.02.10  Fleet: PC/GPUid rename+reorder, Bus column (PCIe gen*100+width encoding),
+#            throttle type: OK/Power/Heat/P+H, compact sizing, disk as table.
+#            GPU Overview: PCIe panel uses same combined format and color scheme.
+#   0.02.11  Compact panel sizing (h=8+4), --home fleet|gpu|host flag,
+#            fleet-overview as default landing, throttle labels: Power/Heat.
+#   0.02.12  Empty username prompt (no default), reworded setup tip,
+#            fleet panel heights: GPU h=20 (~18 rows), disk h=10 (~8 hosts).
+#   0.02.13  Fleet: SSD gauge column (disk per host), Explorer moved to col 1,
+#            removed separate disk panel, h=14, tighter column widths.
+#   0.02.14  Fleet: SSD→Storage, SOL/STK/NOS balance columns via Solana RPC.
+#            Discovery script fetches wallet balances every 5m from mainnet.
+#            SOL: red<0.0065, orange<0.01, green>=0.01.
+#            /metrics/balance endpoint + Prometheus balance scrape jobs.
+#   0.02.15  Bus: Gen1="waiting" grey. NOS: 3 decimals. Throttle OK=dark grey.
+#            Temp: dark-green<78/orange<83/red>=83. Fan: dark-green<60/orange<80/red.
+#            Power: orange>80/red>95. NOS RPC: retry+fallback, sed-based parsing.
+#   0.02.16  Fix throttle: check ALL DCGM bits (4,128=power; 8,32,64=thermal).
+#            Fix NOS parsing: revert to grep (Alpine busybox sed incompatible).
+#            Stagger balance fetch by IP to avoid RPC rate limits.
+#            GPU Overview: same throttle+PCIe fixes.
+#   0.02.17  Balance via gossip: each host fetches own wallet only, shares
+#            balances in discovery.json. Peers pick up balances over LAN.
+#            Removed balance-fleet Prometheus job — no cross-host scraping.
+#            peers.dat extended: ip|host|group|port|ts|status|sol|nos|stk.
+#   0.02.18  Column renames: GPU Utilization, Temperature, GPU Power, Fan Speed,
+#            Storage / Root. Throttle OK→"ok". SOL/STK/NOS: 0→"waiting" grey.
+#            Gauges: basic mode (solid color, shorter bars at fixed widths).
+#   0.02.19  Perf column (P-state P0-P12) after Bus. Footer: sum SOL/STK/NOS.
+#            Info bubble: operator throttle guidance. Process col deferred (needs sidecar).
+#   0.02.20  Pwr Limit=orange (normal), Heat/HW Brake=red (needs attention).
+#            Explorer shows only on GPUid 0 (no repeats per host).
+#            Footer: countRows + crypto sums. NOS: 0 decimals.
+#   0.02.21  Pwr Limit=yellow. Explorer reverted to all rows (per-GPU wallet
+#            mapping needs docker socket — not available in containers).
+#            NOS back to 3 decimals (Grafana footer inherits cell formatting).
+#            Combined throttle states: Brake+Pwr, Brake+Heat, Brake+Heat+Pwr.
 # =============================================================================
