@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-NOSWEB_VERSION="0.02.18"
+NOSWEB_VERSION="0.02.19"
 echo "v${NOSWEB_VERSION}"
 sleep 3
 # =============================================================================
@@ -864,7 +864,7 @@ generate_fleet_dashboard() {
   "panels": [
     {
       "id": 1, "type": "table", "title": "GPU Fleet Status",
-      "description": "One row per GPU across fleet.\\n\\nBus = PCIe link (peak last 24h). 'waiting' = no load detected yet.\\nThrottle checks DCGM clock throttle reasons every 15m:\\n  • Pwr = power cap or power brake (bits 2,7)\\n  • Heat = thermal slowdown SW/HW (bits 3,5,6)\\n  • P+H = both power and thermal active\\n  • ok = no throttle detected\\nSOL/STK/NOS = wallet balances via Solana RPC (updates every 5m, shared via LAN gossip).",
+      "description": "One row per GPU across fleet. Perf=P-state (P0=max, P8=idle).\\n\\nThrottle (checks every 15m):\\n  ok = no throttle detected\\n  Pwr Throttle! = hitting power cap (usually by design, check nvidia-smi -pl)\\n  Heat Throttle! = thermal slowdown — check airflow, dust, fan spacing\\n  P+H Throttle! = both power+heat — worst case, needs immediate attention\\n\\nSOL/STK/NOS update every 5m via Solana RPC. Footer shows fleet totals.",
       "gridPos": {"h": 14, "w": 24, "x": 0, "y": 0},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
@@ -879,13 +879,14 @@ generate_fleet_dashboard() {
         {"refId": "I", "expr": "max by (host)(netdata_disk_space_GiB_average{family=\"/\",dimension=\"used\"}) / (max by (host)(netdata_disk_space_GiB_average{family=\"/\",dimension=\"used\"}) + max by (host)(netdata_disk_space_GiB_average{family=\"/\",dimension=\"avail\"})) * 100", "format": "table", "instant": true},
         {"refId": "J", "expr": "max by (host)(nosweb_sol_balance)", "format": "table", "instant": true},
         {"refId": "K", "expr": "max by (host)(nosweb_nos_staked)", "format": "table", "instant": true},
-        {"refId": "L", "expr": "max by (host)(nosweb_nos_balance)", "format": "table", "instant": true}
+        {"refId": "L", "expr": "max by (host)(nosweb_nos_balance)", "format": "table", "instant": true},
+        {"refId": "M", "expr": "max by (host, gpu)(DCGM_FI_DEV_PSTATE)", "format": "table", "instant": true}
       ],
       "transformations": [
         {"id": "merge", "options": {}},
         {"id": "organize", "options": {
-          "excludeByName": {"Time": true, "Time 1": true, "Time 2": true, "Time 3": true, "Time 4": true, "Time 5": true, "Time 6": true, "Time 7": true, "Time 8": true, "Time 9": true, "Time 10": true, "Time 11": true, "Time 12": true, "modelName": true, "Value #F": true, "Value #G": true},
-          "indexByName": {"wallet_short": 0, "wallet": 1, "host": 2, "gpu": 3, "model": 4, "Value #H": 5, "Value #A": 6, "Value #B": 7, "Value #C": 8, "Value #D": 9, "Value #E": 10, "Value #I": 11, "Value #J": 12, "Value #K": 13, "Value #L": 14},
+          "excludeByName": {"Time": true, "Time 1": true, "Time 2": true, "Time 3": true, "Time 4": true, "Time 5": true, "Time 6": true, "Time 7": true, "Time 8": true, "Time 9": true, "Time 10": true, "Time 11": true, "Time 12": true, "Time 13": true, "modelName": true, "Value #F": true, "Value #G": true},
+          "indexByName": {"wallet_short": 0, "wallet": 1, "host": 2, "gpu": 3, "model": 4, "Value #H": 5, "Value #M": 6, "Value #A": 7, "Value #B": 8, "Value #C": 9, "Value #D": 10, "Value #E": 11, "Value #I": 12, "Value #J": 13, "Value #K": 14, "Value #L": 15},
           "renameByName": {
             "wallet_short": "Explorer",
             "wallet": "wallet",
@@ -893,6 +894,7 @@ generate_fleet_dashboard() {
             "gpu": "GPUid",
             "model": "Model",
             "Value #H": "Bus",
+            "Value #M": "Perf",
             "Value #A": "GPU Utilization",
             "Value #B": "Temperature",
             "Value #C": "GPU Power",
@@ -959,6 +961,28 @@ generate_fleet_dashboard() {
                 {"value": 200, "color": "dark-green"},
                 {"value": 416, "color": "green"}
               ]}}
+            ]
+          },
+          {
+            "matcher": {"id": "byName", "options": "Perf"},
+            "properties": [
+              {"id": "custom.width", "value": 40},
+              {"id": "custom.cellOptions", "value": {"type": "color-text"}},
+              {"id": "mappings", "value": [{"type": "value", "options": {
+                "0": {"text": "P0", "color": "green"},
+                "1": {"text": "P1", "color": "green"},
+                "2": {"text": "P2", "color": "dark-green"},
+                "3": {"text": "P3", "color": "dark-green"},
+                "4": {"text": "P4", "color": "dark-green"},
+                "5": {"text": "P5", "color": "#888888"},
+                "6": {"text": "P6", "color": "#888888"},
+                "7": {"text": "P7", "color": "#888888"},
+                "8": {"text": "P8", "color": "#555555"},
+                "9": {"text": "P9", "color": "#555555"},
+                "10": {"text": "P10", "color": "#555555"},
+                "11": {"text": "P11", "color": "#555555"},
+                "12": {"text": "P12", "color": "#555555"}
+              }}]}
             ]
           },
           {
@@ -1082,7 +1106,7 @@ generate_fleet_dashboard() {
       "options": {
         "showHeader": true,
         "cellHeight": "sm",
-        "footer": {"show": true, "reducer": ["count"], "countRows": true},
+        "footer": {"show": true, "reducer": ["sum"], "fields": ["SOL", "STK", "NOS"], "countRows": false},
         "sortBy": [{"displayName": "PC", "desc": false}]
       }
     }
@@ -2165,4 +2189,6 @@ main "$@"
 #   0.02.18  Column renames: GPU Utilization, Temperature, GPU Power, Fan Speed,
 #            Storage / Root. Throttle OK→"ok". SOL/STK/NOS: 0→"waiting" grey.
 #            Gauges: basic mode (solid color, shorter bars at fixed widths).
+#   0.02.19  Perf column (P-state P0-P12) after Bus. Footer: sum SOL/STK/NOS.
+#            Info bubble: operator throttle guidance. Process col deferred (needs sidecar).
 # =============================================================================
