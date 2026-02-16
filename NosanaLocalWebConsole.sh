@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-NOSWEB_VERSION="0.02.30"
+NOSWEB_VERSION="0.02.31"
 echo "v${NOSWEB_VERSION}"
 sleep 3
 # =============================================================================
@@ -954,7 +954,7 @@ generate_host_dashboard() {
         {"refId": "B", "expr": "sum(rate(process_cpu_seconds_total{job=~\"prometheus|grafana\"}[2m])) * 100", "legendFormat": "CPU"},
         {"refId": "C", "expr": "prometheus_tsdb_storage_size_bytes / 1024 / 1024", "legendFormat": "TSDB"},
         {"refId": "D", "expr": "sum(rate(prometheus_http_response_size_bytes_sum[5m]))", "legendFormat": "Net Out"},
-        {"refId": "E", "expr": "nosweb_containers_running{job=\"info\"}", "legendFormat": "Containers"}
+        {"refId": "E", "expr": "max(nosweb_containers_running)", "legendFormat": "Containers"}
       ],
       "fieldConfig": {"defaults": {"decimals": 0,
         "thresholds": {"mode": "absolute", "steps": [
@@ -1007,15 +1007,15 @@ generate_fleet_dashboard() {
   "panels": [
     {
       "id": 3, "type": "stat", "title": "NOSweb Stack",
-      "description": "Monitoring stack overhead. RAM/CPU: Prometheus+Grafana. TSDB: Prometheus storage (15d retention). Net: scrape traffic. Containers: NOSweb Docker containers running.",
-      "gridPos": {"h": 3, "w": 24, "x": 0, "y": 0},
+      "description": "Monitoring stack overhead. Prom+Graf: combined RAM. TSDB: Prometheus storage (15d retention). Net: scrape traffic. Containers: running NOSweb Docker containers.",
+      "gridPos": {"h": 4, "w": 24, "x": 0, "y": 0},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {"refId": "A", "expr": "sum(process_resident_memory_bytes{job=~\"prometheus|grafana\"}) / 1024 / 1024", "legendFormat": "Prom+Graf MB"},
         {"refId": "B", "expr": "sum(rate(process_cpu_seconds_total{job=~\"prometheus|grafana\"}[2m])) * 100", "legendFormat": "CPU %"},
         {"refId": "C", "expr": "prometheus_tsdb_storage_size_bytes / 1024 / 1024", "legendFormat": "TSDB MB"},
         {"refId": "D", "expr": "sum(rate(prometheus_http_response_size_bytes_sum[5m]))", "legendFormat": "Net Out"},
-        {"refId": "E", "expr": "nosweb_containers_running{job=\"info\"}", "legendFormat": "Containers"}
+        {"refId": "E", "expr": "max(nosweb_containers_running)", "legendFormat": "Containers"}
       ],
       "fieldConfig": {"defaults": {"decimals": 0,
         "thresholds": {"mode": "absolute", "steps": [
@@ -1035,7 +1035,7 @@ generate_fleet_dashboard() {
     {
       "id": 1, "type": "table", "title": "GPU Fleet Status",
       "description": "One row per GPU across fleet. Perf=P-state (P0=max, P8=idle).\\n\\nThrottle (lookback controlled by dropdown above):\\n  ok = no throttle\\n  Pwr Limit (orange) = normal, GPU hitting configured power cap\\n  Heat Throttle! (red) = thermal slowdown, check airflow/dust/spacing\\n  HW Pwr Brake! (red) = PSU/cable issue, needs immediate attention\\n  Combined states shown when multiple throttles active\\n  Set dropdown to 1m to clear old events quickly.\\n\\nSOL/STK/NOS update every 5m via Solana RPC. Footer shows fleet totals.",
-      "gridPos": {"h": 14, "w": 24, "x": 0, "y": 3},
+      "gridPos": {"h": 14, "w": 24, "x": 0, "y": 4},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {"refId": "A", "expr": "max by (host, gpu)(DCGM_FI_DEV_GPU_UTIL)", "format": "table", "instant": true},
@@ -1915,7 +1915,7 @@ EOF
             fi
             [ -z "$sts" ] && continue
             [ "$sts" -lt "$cutoff" ] 2>/dev/null && continue
-            [ -z "$model" ] && model=""
+            [ -z "$model" ] && model="-"
             printf 'nosweb_event{pc="%s",gpuid="%s",model="%s",event="%s",started="%s",ended="%s",duration="%s",status="%s"} %s\n' \
                 "$pc" "$gpuid" "$model" "$etype" "$sfmt" "$efmt" "$dfmt" "$status" "$sts" >> "$tmp"
         done
