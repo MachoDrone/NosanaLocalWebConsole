@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-NOSWEB_VERSION="0.02.16"
+NOSWEB_VERSION="0.02.17"
 echo "v${NOSWEB_VERSION}"
 sleep 3
 # =============================================================================
@@ -494,18 +494,10 @@ scrape_configs:
 
   - job_name: 'balance'
     metrics_path: '/metrics/balance'
-    scrape_interval: 300s
+    honor_labels: true
+    scrape_interval: 60s
     static_configs:
       - targets: ['${C_PROXY}:80']
-        labels:
-          host: '${my_hostname}'
-
-  - job_name: 'balance-fleet'
-    metrics_path: '/metrics/balance'
-    scrape_interval: 300s
-    file_sd_configs:
-      - files: ['/etc/prometheus/targets/fleet.json']
-        refresh_interval: 30s
 PROMEOF
 
     # Phase 1: local targets (container names on Docker network)
@@ -1112,6 +1104,9 @@ generate_discovery_script() {
     cat > "${DISCOVERY_SCRIPT}" << 'DISCEOF'
 #!/bin/sh
 # NOSweb Fleet Discovery — HTTP gossip (runs inside proxy container)
+# Each host fetches its OWN wallet balance from Solana RPC.
+# Balances are shared via the /discovery JSON gossip protocol over LAN.
+# No cross-host balance scraping — peers pick up balances during gossip.
 
 PEERS_FILE="/data/peers.dat"
 TARGETS_FILE="/data/targets/fleet.json"
@@ -1130,29 +1125,67 @@ SOLANA_RPC="https://api.mainnet-beta.solana.com"
 NOS_MINT="nosXBVoaCTtYdLvKY6Csb4AC8JCdQKKAaWYtx2ZMoo7"
 NOS_STAKE_PROGRAM="nosScmHY2uR24Zh751PmGj9ww9QRNHewh9H59AfrTJE"
 
+# Own balance state (updated by fetch_balances)
+MY_SOL="0"
+MY_NOS="0"
+MY_STK="0"
+
 log() { echo "[discovery] $*"; }
 
 touch "$PEERS_FILE"
 mkdir -p "$(dirname "$TARGETS_FILE")" "$SCAN_DIR"
 
-# ── Seed empty balance file so nginx doesn't 404 ──
-cat > "$BALANCE_FILE" << BSEED
-# HELP nosweb_sol_balance SOL balance
-# TYPE nosweb_sol_balance gauge
-nosweb_sol_balance 0
-# HELP nosweb_nos_balance NOS token balance
-# TYPE nosweb_nos_balance gauge
-nosweb_nos_balance 0
-# HELP nosweb_nos_staked Staked NOS balance
-# TYPE nosweb_nos_staked gauge
-nosweb_nos_staked 0
-BSEED
-chmod 644 "$BALANCE_FILE"
-
-# ── Write identity file for nginx to serve at /discovery ──
-cat > /data/discovery.json << IDJSON
-{"host":"${MY_HOST}","ip":"${MY_IP}","group":"${MY_GROUP}","port":${MY_PORT},"version":"${NOSWEB_VERSION:-unknown}","wallet":"${MY_WALLET}"}
+# ── Write discovery.json — includes balance data ──
+write_discovery() {
+    cat > /data/discovery.json << IDJSON
+{"host":"${MY_HOST}","ip":"${MY_IP}","group":"${MY_GROUP}","port":${MY_PORT},"version":"${NOSWEB_VERSION:-unknown}","wallet":"${MY_WALLET}","sol":${MY_SOL},"nos":${MY_NOS},"stk":${MY_STK}}
 IDJSON
+}
+
+# Seed initial discovery.json
+write_discovery
+
+# ── Seed empty balance file so nginx doesn't 404 ──
+write_balance_metrics() {
+    local tmp
+    tmp=$(mktemp -p "$(dirname "$BALANCE_FILE")")
+    cat > "$tmp" << BALHEADER
+# HELP nosweb_sol_balance SOL balance per host
+# TYPE nosweb_sol_balance gauge
+# HELP nosweb_nos_balance NOS token balance per host
+# TYPE nosweb_nos_balance gauge
+# HELP nosweb_nos_staked Staked NOS balance per host
+# TYPE nosweb_nos_staked gauge
+BALHEADER
+
+    # Own balances
+    printf 'nosweb_sol_balance{host="%s"} %s\n' "$MY_HOST" "$MY_SOL" >> "$tmp"
+    printf 'nosweb_nos_balance{host="%s"} %s\n' "$MY_HOST" "$MY_NOS" >> "$tmp"
+    printf 'nosweb_nos_staked{host="%s"} %s\n' "$MY_HOST" "$MY_STK" >> "$tmp"
+
+    # Peer balances from peers.dat
+    while IFS='|' read -r ip host group port last_seen status sol nos stk _; do
+        [ -z "$ip" ] && continue
+        [ "$ip" = "$MY_IP" ] && continue
+        local age now
+        now=$(date +%s)
+        age=$((now - last_seen))
+        [ "$age" -gt "$OFFLINE_AFTER" ] && continue
+        # Only write if we have balance data
+        [ -z "$sol" ] && sol="0"
+        [ -z "$nos" ] && nos="0"
+        [ -z "$stk" ] && stk="0"
+        printf 'nosweb_sol_balance{host="%s"} %s\n' "$host" "$sol" >> "$tmp"
+        printf 'nosweb_nos_balance{host="%s"} %s\n' "$host" "$nos" >> "$tmp"
+        printf 'nosweb_nos_staked{host="%s"} %s\n' "$host" "$stk" >> "$tmp"
+    done < "$PEERS_FILE"
+
+    chmod 644 "$tmp"
+    mv "$tmp" "$BALANCE_FILE"
+}
+
+# Seed initial balance file
+write_balance_metrics
 
 # ── Derive /24 subnet base from own IP ──
 subnet_base() {
@@ -1166,7 +1199,7 @@ write_targets() {
     tmp=$(mktemp -p "$(dirname "$TARGETS_FILE")")
     first=1
     printf '[' > "$tmp"
-    while IFS='|' read -r ip host group port last_seen status _; do
+    while IFS='|' read -r ip host group port last_seen status _ _ _ _; do
         [ -z "$ip" ] && continue
         [ "$ip" = "$MY_IP" ] && continue
         age=$((now - last_seen))
@@ -1189,7 +1222,7 @@ write_targets() {
 # ── Process a /discovery JSON response ──
 process_response() {
     local ip="$1" body="$2"
-    local rhost rip rgroup rport
+    local rhost rip rgroup rport rsol rnos rstk
     # Parse JSON fields (lightweight — no jq in Alpine)
     rhost=$(echo "$body" | sed -n 's/.*"host"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
     rip=$(echo "$body" | sed -n 's/.*"ip"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
@@ -1202,14 +1235,21 @@ process_response() {
     [ "$rip" = "$MY_IP" ] && return
     # Ignore different group
     [ "$rgroup" != "$MY_GROUP" ] && return
-    # Upsert peer in database
+    # Extract balance data from peer's discovery JSON
+    rsol=$(echo "$body" | grep -o '"sol":[0-9.e+-]*' | head -1 | grep -o '[0-9.e+-]*$')
+    rnos=$(echo "$body" | grep -o '"nos":[0-9.e+-]*' | head -1 | grep -o '[0-9.e+-]*$')
+    rstk=$(echo "$body" | grep -o '"stk":[0-9.e+-]*' | head -1 | grep -o '[0-9.e+-]*$')
+    [ -z "$rsol" ] && rsol="0"
+    [ -z "$rnos" ] && rnos="0"
+    [ -z "$rstk" ] && rstk="0"
+    # Upsert peer in database (format: ip|host|group|port|ts|status|sol|nos|stk)
     local now tmp
     now=$(date +%s)
     tmp=$(mktemp -p /data)
     grep -v "^${rip}|" "$PEERS_FILE" > "$tmp" 2>/dev/null || true
-    echo "${rip}|${rhost}|${rgroup}|${rport}|${now}|online" >> "$tmp"
+    echo "${rip}|${rhost}|${rgroup}|${rport}|${now}|online|${rsol}|${rnos}|${rstk}" >> "$tmp"
     cat "$tmp" > "$PEERS_FILE" && rm -f "$tmp"
-    log "peer: ${rhost} (${rip}) online"
+    log "peer: ${rhost} (${rip}) sol=${rsol} nos=${rnos} stk=${rstk}"
 }
 
 # ── Probe a single IP via HTTP ──
@@ -1243,7 +1283,7 @@ gossip_round() {
     fi
 
     # Also probe known peers from database
-    while IFS='|' read -r ip _ _ port _ _ _; do
+    while IFS='|' read -r ip _ _ port _ _ _ _ _ _; do
         [ -z "$ip" ] && continue
         [ "$ip" = "$MY_IP" ] && continue
         probe_ip "$ip" "$port" &
@@ -1267,16 +1307,17 @@ gossip_round() {
     done
 
     write_targets
+    write_balance_metrics
     [ "$changed" -eq 1 ] && log "targets updated"
 }
 
-# ── Fetch wallet balances from Solana RPC ──
+# ── Fetch OWN wallet balances from Solana RPC ──
 fetch_balances() {
     [ "$MY_WALLET" = "unknown" ] && return 1
 
-    local sol="0" nos="0" stk="0" resp lamports tmp retry
+    local resp lamports retry raw
 
-    # SOL balance (lamports → SOL / 1e9) — retry up to 2 times
+    # SOL balance (lamports → SOL / 1e9)
     for retry in 1 2; do
         resp=$(wget -q -T 8 -O - \
             --header='Content-Type: application/json' \
@@ -1286,10 +1327,10 @@ fetch_balances() {
     if [ -n "$resp" ]; then
         lamports=$(echo "$resp" | grep -o '"value":[0-9]*' | head -1 | grep -o '[0-9]*$')
         [ -n "$lamports" ] && [ "$lamports" -gt 0 ] 2>/dev/null && \
-            sol=$(awk "BEGIN{printf \"%.10f\", $lamports/1000000000}")
+            MY_SOL=$(awk "BEGIN{printf \"%.10f\", $lamports/1000000000}")
     fi
 
-    # NOS token balance (SPL token, 6 decimals) — retry up to 2 times
+    # NOS token balance (SPL token, 6 decimals)
     for retry in 1 2; do
         resp=$(wget -q -T 8 -O - \
             --header='Content-Type: application/json' \
@@ -1297,25 +1338,19 @@ fetch_balances() {
             "$SOLANA_RPC" 2>/dev/null) && break || sleep 2
     done
     if [ -n "$resp" ]; then
-        # Primary: extract uiAmount (works for decimals and integers)
-        local raw
         raw=$(echo "$resp" | grep -o '"uiAmount":[0-9.e+-]*' | head -1 | grep -o '[0-9.e+-]*$')
         if [ -n "$raw" ] && [ "$raw" != "0" ]; then
-            nos=$(awk "BEGIN{printf \"%.6f\", $raw + 0}")
+            MY_NOS=$(awk "BEGIN{printf \"%.6f\", $raw + 0}")
         fi
-        # Fallback: extract raw "amount" string and divide by 1e6
-        if [ "$nos" = "0" ] || [ -z "$nos" ]; then
+        # Fallback: raw "amount" string ÷ 1e6
+        if [ "$MY_NOS" = "0" ]; then
             raw=$(echo "$resp" | grep -o '"amount":"[0-9]*"' | head -1 | grep -o '[0-9]*')
-            if [ -n "$raw" ] && [ "$raw" != "0" ]; then
-                nos=$(awk "BEGIN{printf \"%.6f\", $raw/1000000}")
-            else
-                nos="0"
-            fi
+            [ -n "$raw" ] && [ "$raw" != "0" ] && \
+                MY_NOS=$(awk "BEGIN{printf \"%.6f\", $raw/1000000}")
         fi
-        log "balance-debug: NOS raw resp contains uiAmount=$(echo "$resp" | grep -c 'uiAmount')"
     fi
 
-    # STK: staked NOS via Nosana stake program (getProgramAccounts + memcmp)
+    # STK: staked NOS via Nosana stake program
     for retry in 1 2; do
         resp=$(wget -q -T 10 -O - \
             --header='Content-Type: application/json' \
@@ -1326,38 +1361,23 @@ fetch_balances() {
         local stk_raw
         stk_raw=$(echo "$resp" | grep -o '"amount":"[0-9]*"' | head -1 | grep -o '[0-9]*')
         [ -n "$stk_raw" ] && [ "$stk_raw" != "0" ] && \
-            stk=$(awk "BEGIN{printf \"%.6f\", $stk_raw/1000000}")
+            MY_STK=$(awk "BEGIN{printf \"%.6f\", $stk_raw/1000000}")
     fi
 
-    # Write metrics (atomic via mktemp+mv, same directory = same filesystem)
-    tmp=$(mktemp -p "$(dirname "$BALANCE_FILE")")
-    cat > "$tmp" << BALEOF
-# HELP nosweb_sol_balance SOL balance
-# TYPE nosweb_sol_balance gauge
-nosweb_sol_balance $sol
-# HELP nosweb_nos_balance NOS token balance
-# TYPE nosweb_nos_balance gauge
-nosweb_nos_balance $nos
-# HELP nosweb_nos_staked Staked NOS balance
-# TYPE nosweb_nos_staked gauge
-nosweb_nos_staked $stk
-BALEOF
-    chmod 644 "$tmp"
-    mv "$tmp" "$BALANCE_FILE"
+    # Update discovery.json with fresh balance data
+    write_discovery
+    # Update combined balance metrics
+    write_balance_metrics
 
-    log "balance: SOL=$sol NOS=$nos STK=$stk"
+    log "balance: SOL=$MY_SOL NOS=$MY_NOS STK=$MY_STK"
 }
 
 # ── Main loop ──
 log "starting: host=${MY_HOST} ip=${MY_IP} group=${MY_GROUP} port=${MY_PORT}"
-log "mode: HTTP gossip (subnet scan + seed peers)"
+log "mode: HTTP gossip + balance sharing (each host fetches own wallet only)"
 write_targets
 
 last_balance=0
-# Stagger first balance fetch by IP last octet (0-25s) to avoid RPC rate limits
-stagger=$((${MY_IP##*.} % 26))
-log "balance fetch stagger: ${stagger}s"
-sleep "$stagger"
 while true; do
     gossip_round
     now=$(date +%s)
@@ -2128,4 +2148,8 @@ main "$@"
 #            Fix NOS parsing: revert to grep (Alpine busybox sed incompatible).
 #            Stagger balance fetch by IP to avoid RPC rate limits.
 #            GPU Overview: same throttle+PCIe fixes.
+#   0.02.17  Balance via gossip: each host fetches own wallet only, shares
+#            balances in discovery.json. Peers pick up balances over LAN.
+#            Removed balance-fleet Prometheus job — no cross-host scraping.
+#            peers.dat extended: ip|host|group|port|ts|status|sol|nos|stk.
 # =============================================================================
