@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-NOSWEB_VERSION="0.02.29"
+NOSWEB_VERSION="0.02.30"
 echo "v${NOSWEB_VERSION}"
 sleep 3
 # =============================================================================
@@ -518,7 +518,8 @@ NICHDR
 
     # Container count
     local running
-    running=$(docker ps --filter "name=NOSweb" --format '{{.Names}}' 2>/dev/null | wc -l)
+    running=$(docker ps --format '{{.Names}}' 2>/dev/null | grep -c '^NOSweb' || true)
+    [ -z "$running" ] && running=0
     cat >> "$tmp" << CNTHDR
 # HELP nosweb_containers_running Number of NOSweb containers currently running
 # TYPE nosweb_containers_running gauge
@@ -953,7 +954,7 @@ generate_host_dashboard() {
         {"refId": "B", "expr": "sum(rate(process_cpu_seconds_total{job=~\"prometheus|grafana\"}[2m])) * 100", "legendFormat": "CPU"},
         {"refId": "C", "expr": "prometheus_tsdb_storage_size_bytes / 1024 / 1024", "legendFormat": "TSDB"},
         {"refId": "D", "expr": "sum(rate(prometheus_http_response_size_bytes_sum[5m]))", "legendFormat": "Net Out"},
-        {"refId": "E", "expr": "nosweb_containers_running", "legendFormat": "Containers"}
+        {"refId": "E", "expr": "nosweb_containers_running{job=\"info\"}", "legendFormat": "Containers"}
       ],
       "fieldConfig": {"defaults": {"decimals": 0,
         "thresholds": {"mode": "absolute", "steps": [
@@ -1007,34 +1008,34 @@ generate_fleet_dashboard() {
     {
       "id": 3, "type": "stat", "title": "NOSweb Stack",
       "description": "Monitoring stack overhead. RAM/CPU: Prometheus+Grafana. TSDB: Prometheus storage (15d retention). Net: scrape traffic. Containers: NOSweb Docker containers running.",
-      "gridPos": {"h": 4, "w": 24, "x": 0, "y": 0},
+      "gridPos": {"h": 3, "w": 24, "x": 0, "y": 0},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
-        {"refId": "A", "expr": "sum(process_resident_memory_bytes{job=~\"prometheus|grafana\"}) / 1024 / 1024", "legendFormat": "RAM"},
-        {"refId": "B", "expr": "sum(rate(process_cpu_seconds_total{job=~\"prometheus|grafana\"}[2m])) * 100", "legendFormat": "CPU"},
-        {"refId": "C", "expr": "prometheus_tsdb_storage_size_bytes / 1024 / 1024", "legendFormat": "TSDB"},
+        {"refId": "A", "expr": "sum(process_resident_memory_bytes{job=~\"prometheus|grafana\"}) / 1024 / 1024", "legendFormat": "Prom+Graf MB"},
+        {"refId": "B", "expr": "sum(rate(process_cpu_seconds_total{job=~\"prometheus|grafana\"}[2m])) * 100", "legendFormat": "CPU %"},
+        {"refId": "C", "expr": "prometheus_tsdb_storage_size_bytes / 1024 / 1024", "legendFormat": "TSDB MB"},
         {"refId": "D", "expr": "sum(rate(prometheus_http_response_size_bytes_sum[5m]))", "legendFormat": "Net Out"},
-        {"refId": "E", "expr": "nosweb_containers_running", "legendFormat": "Containers"}
+        {"refId": "E", "expr": "nosweb_containers_running{job=\"info\"}", "legendFormat": "Containers"}
       ],
       "fieldConfig": {"defaults": {"decimals": 0,
         "thresholds": {"mode": "absolute", "steps": [
           {"value": null, "color": "green"}, {"value": 300, "color": "yellow"}, {"value": 600, "color": "red"}
         ]}},
         "overrides": [
-          {"matcher": {"id": "byName", "options": "RAM"}, "properties": [{"id": "unit", "value": "decmbytes"}]},
-          {"matcher": {"id": "byName", "options": "CPU"}, "properties": [{"id": "unit", "value": "percent"}, {"id": "decimals", "value": 1}]},
-          {"matcher": {"id": "byName", "options": "TSDB"}, "properties": [{"id": "unit", "value": "decmbytes"}, {"id": "thresholds", "value": {"mode": "absolute", "steps": [{"value": null, "color": "green"}, {"value": 500, "color": "yellow"}, {"value": 1000, "color": "red"}]}}]},
+          {"matcher": {"id": "byName", "options": "Prom+Graf MB"}, "properties": [{"id": "unit", "value": "decmbytes"}]},
+          {"matcher": {"id": "byName", "options": "CPU %"}, "properties": [{"id": "unit", "value": "percent"}, {"id": "decimals", "value": 1}]},
+          {"matcher": {"id": "byName", "options": "TSDB MB"}, "properties": [{"id": "unit", "value": "decmbytes"}, {"id": "thresholds", "value": {"mode": "absolute", "steps": [{"value": null, "color": "green"}, {"value": 500, "color": "yellow"}, {"value": 1000, "color": "red"}]}}]},
           {"matcher": {"id": "byName", "options": "Net Out"}, "properties": [{"id": "unit", "value": "Bps"}, {"id": "thresholds", "value": {"mode": "absolute", "steps": [{"value": null, "color": "green"}, {"value": 102400, "color": "yellow"}, {"value": 1048576, "color": "red"}]}}]},
           {"matcher": {"id": "byName", "options": "Containers"}, "properties": [{"id": "unit", "value": "short"}, {"id": "thresholds", "value": {"mode": "absolute", "steps": [{"value": null, "color": "red"}, {"value": 5, "color": "green"}]}}]}
         ]},
       "options": {"graphMode": "none", "colorMode": "value", "textMode": "auto", "orientation": "horizontal",
         "reduceOptions": {"calcs": ["lastNotNull"]},
-        "text": {"titleSize": 10, "valueSize": 16}}
+        "text": {"titleSize": 10, "valueSize": 14}}
     },
     {
       "id": 1, "type": "table", "title": "GPU Fleet Status",
       "description": "One row per GPU across fleet. Perf=P-state (P0=max, P8=idle).\\n\\nThrottle (lookback controlled by dropdown above):\\n  ok = no throttle\\n  Pwr Limit (orange) = normal, GPU hitting configured power cap\\n  Heat Throttle! (red) = thermal slowdown, check airflow/dust/spacing\\n  HW Pwr Brake! (red) = PSU/cable issue, needs immediate attention\\n  Combined states shown when multiple throttles active\\n  Set dropdown to 1m to clear old events quickly.\\n\\nSOL/STK/NOS update every 5m via Solana RPC. Footer shows fleet totals.",
-      "gridPos": {"h": 14, "w": 24, "x": 0, "y": 4},
+      "gridPos": {"h": 14, "w": 24, "x": 0, "y": 3},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {"refId": "A", "expr": "max by (host, gpu)(DCGM_FI_DEV_GPU_UTIL)", "format": "table", "instant": true},
@@ -1894,13 +1895,27 @@ EVTHDR
         done < "$EVENT_STATE"
     fi
 
-    # Resolved events (format: sts|ets|pc|gpuid|model|etype|sfmt|efmt|dfmt|status)
+    # Resolved events — handle both old (9-field) and new (10-field) CSV format
     if [ -s "$EVENT_LOG" ]; then
         local cutoff=$((now - 604800))
-        tail -200 "$EVENT_LOG" | while IFS='|' read -r sts ets pc gpuid model etype sfmt efmt dfmt status; do
+        tail -200 "$EVENT_LOG" | while IFS= read -r rawline; do
+            [ -z "$rawline" ] && continue
+            local nfields sts ets pc gpuid model etype sfmt efmt dfmt status
+            nfields=$(echo "$rawline" | awk -F'|' '{print NF}')
+            if [ "$nfields" -ge 10 ]; then
+                IFS='|' read -r sts ets pc gpuid model etype sfmt efmt dfmt status <<EOF
+$rawline
+EOF
+            else
+                # Old format: no model field
+                IFS='|' read -r sts ets pc gpuid etype sfmt efmt dfmt status <<EOF
+$rawline
+EOF
+                model=""
+            fi
             [ -z "$sts" ] && continue
             [ "$sts" -lt "$cutoff" ] 2>/dev/null && continue
-            [ -z "$model" ] && model="unknown"
+            [ -z "$model" ] && model=""
             printf 'nosweb_event{pc="%s",gpuid="%s",model="%s",event="%s",started="%s",ended="%s",duration="%s",status="%s"} %s\n' \
                 "$pc" "$gpuid" "$model" "$etype" "$sfmt" "$efmt" "$dfmt" "$status" "$sts" >> "$tmp"
         done
@@ -2532,6 +2547,9 @@ main() {
     launch_prometheus; echo ""
     launch_grafana;    echo ""
     launch_proxy
+
+    # Re-generate info_metrics now that containers are running (docker count)
+    generate_info_metrics
 
     start_wallet_scanner
 
