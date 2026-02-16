@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bash <(wget -qO- https://raw.githubusercontent.com/MachoDrone/NosanaLocalWebConsole/refs/heads/main/NosanaLocalWebConsole.sh)
-NOSWEB_VERSION="0.02.32"
+NOSWEB_VERSION="0.02.34"
 echo "v${NOSWEB_VERSION}"
 sleep 3
 # =============================================================================
@@ -952,7 +952,7 @@ generate_host_dashboard() {
       "targets": [
         {"refId": "A", "expr": "sum(process_resident_memory_bytes{job=~\"prometheus|grafana\"}) / 1024 / 1024", "legendFormat": "RAM"},
         {"refId": "B", "expr": "sum(rate(process_cpu_seconds_total{job=~\"prometheus|grafana\"}[2m])) * 100", "legendFormat": "CPU"},
-        {"refId": "C", "expr": "(prometheus_tsdb_size_bytes or prometheus_tsdb_storage_size_bytes) / 1024 / 1024", "legendFormat": "TSDB"},
+        {"refId": "C", "expr": "(prometheus_tsdb_storage_blocks_bytes + prometheus_tsdb_wal_storage_size_bytes + prometheus_tsdb_head_chunks_storage_size_bytes) / 1024 / 1024", "legendFormat": "TSDB"},
         {"refId": "D", "expr": "sum(rate(prometheus_http_response_size_bytes_sum[5m]))", "legendFormat": "Net Out"},
         {"refId": "E", "expr": "max(nosweb_containers_running)", "legendFormat": "Containers"}
       ],
@@ -1025,7 +1025,7 @@ generate_fleet_dashboard() {
       "id": 31, "type": "stat", "title": "",
       "gridPos": {"h": 3, "w": 5, "x": 9, "y": 0},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "targets": [{"refId": "A", "expr": "(prometheus_tsdb_size_bytes or prometheus_tsdb_storage_size_bytes) / 1024 / 1024", "legendFormat": "TSDB"}],
+      "targets": [{"refId": "A", "expr": "(prometheus_tsdb_storage_blocks_bytes + prometheus_tsdb_wal_storage_size_bytes + prometheus_tsdb_head_chunks_storage_size_bytes) / 1024 / 1024", "legendFormat": "TSDB"}],
       "fieldConfig": {"defaults": {"unit": "decmbytes", "decimals": 0, "thresholds": {"mode": "absolute", "steps": [{"value": null, "color": "green"}, {"value": 500, "color": "yellow"}, {"value": 1000, "color": "red"}]}}},
       "options": {"graphMode": "none", "colorMode": "value", "textMode": "value_and_name", "reduceOptions": {"calcs": ["lastNotNull"]}, "text": {"titleSize": 10, "valueSize": 16}}
     },
@@ -1273,7 +1273,7 @@ generate_fleet_dashboard() {
               {"id": "decimals", "value": 4},
               {"id": "custom.cellOptions", "value": {"type": "color-text"}},
               {"id": "mappings", "value": [
-                {"type": "value", "options": {"0": {"text": "waiting", "color": "#555555"}}}
+                {"type": "value", "options": {"-1": {"text": "waiting", "color": "#555555"}}}
               ]},
               {"id": "thresholds", "value": {"mode": "absolute", "steps": [
                 {"value": null, "color": "#555555"},
@@ -1290,7 +1290,7 @@ generate_fleet_dashboard() {
               {"id": "decimals", "value": 0},
               {"id": "custom.cellOptions", "value": {"type": "color-text"}},
               {"id": "mappings", "value": [
-                {"type": "value", "options": {"0": {"text": "waiting", "color": "#555555"}}}
+                {"type": "value", "options": {"-1": {"text": "waiting", "color": "#555555"}}}
               ]},
               {"id": "color", "value": {"mode": "fixed", "fixedColor": "dark-green"}},
               {"id": "custom.width", "value": 55}
@@ -1302,7 +1302,7 @@ generate_fleet_dashboard() {
               {"id": "decimals", "value": 3},
               {"id": "custom.cellOptions", "value": {"type": "color-text"}},
               {"id": "mappings", "value": [
-                {"type": "value", "options": {"0": {"text": "waiting", "color": "#555555"}}}
+                {"type": "value", "options": {"-1": {"text": "waiting", "color": "#555555"}}}
               ]},
               {"id": "color", "value": {"mode": "fixed", "fixedColor": "dark-green"}},
               {"id": "custom.width", "value": 75}
@@ -1470,15 +1470,15 @@ init_gpu_balances() {
         while IFS='|' read -r gpu wallet; do
             [ -z "$gpu" ] || [ -z "$wallet" ] && continue
             # Look up cached STK for this wallet
-            cached_stk="0"
+            cached_stk="-1"
             if [ -f "$STK_CACHE" ] && [ -s "$STK_CACHE" ]; then
                 cached_stk=$(grep "^${wallet}|" "$STK_CACHE" 2>/dev/null | head -1 | cut -d'|' -f2)
-                [ -z "$cached_stk" ] && cached_stk="0"
+                [ -z "$cached_stk" ] && cached_stk="-1"
             fi
-            echo "${gpu}|${wallet}|0|0|${cached_stk}" >> "$GPU_BALANCES"
+            echo "${gpu}|${wallet}|-1|-1|${cached_stk}" >> "$GPU_BALANCES"
         done < "$GPU_WALLETS"
     else
-        echo "0|unknown|0|0|0" > "$GPU_BALANCES"
+        echo "0|unknown|-1|-1|-1" > "$GPU_BALANCES"
     fi
 }
 init_gpu_balances
@@ -1507,9 +1507,9 @@ write_discovery() {
     first_nos=$(head -1 "$GPU_BALANCES" 2>/dev/null | cut -d'|' -f4)
     first_stk=$(head -1 "$GPU_BALANCES" 2>/dev/null | cut -d'|' -f5)
     [ -z "$first_wallet" ] && first_wallet="unknown"
-    [ -z "$first_sol" ] && first_sol="0"
-    [ -z "$first_nos" ] && first_nos="0"
-    [ -z "$first_stk" ] && first_stk="0"
+    [ -z "$first_sol" ] && first_sol="-1"
+    [ -z "$first_nos" ] && first_nos="-1"
+    [ -z "$first_stk" ] && first_stk="-1"
     cat > /data/discovery.json << IDJSON
 {"host":"${MY_HOST}","ip":"${MY_IP}","group":"${MY_GROUP}","port":${MY_PORT},"version":"${NOSWEB_VERSION:-unknown}","wallet":"${first_wallet}","sol":${first_sol},"nos":${first_nos},"stk":${first_stk},"gpus":"${gpus_str}"}
 IDJSON
