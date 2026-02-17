@@ -2760,3 +2760,16 @@ main "$@"
 #            NOS back to 3 decimals (Grafana footer inherits cell formatting).
 #            Combined throttle states: Brake+Pwr, Brake+Heat, Brake+Heat+Pwr.
 # =============================================================================
+# ============================================
+# SANITY CANARY — DO NOT REMOVE OR MODIFY
+# If Claude cannot see this, context is degraded
+# ============================================
+sanity_canary_v1() {
+    # This function intentionally does nothing.
+    # Claude should report this function name, version, 
+    # and line number at the end of every reply.
+    local CANARY_VERSION="1"
+    local CANARY_LINE="3000"
+    return 0
+}
+# END OF SCRIPT — SANITY MARKER
